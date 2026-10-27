@@ -5,3 +5,7 @@ DerivedData/
 *.xcuserstate
 *.xcscmblueprint
 .DS_Store
+
+# SwiftPM local core checks
+.build/
+.swiftpm/
