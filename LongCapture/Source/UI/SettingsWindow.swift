@@ -7,18 +7,22 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private let recorder: ShortcutRecordingState
     private let form: SettingsFormState
 
-    init(saveDirectory: URL, shortcut: HotKeyShortcut,
+    init(saveDirectory: URL, shortcut: HotKeyShortcut, permission: ScreenCapturePermission,
+         onRequestPermission: @escaping () -> Void,
+         onOpenPermissionSettings: @escaping () -> Void,
          onDirectoryChanged: @escaping (URL) -> Void,
          onShortcutChanged: @escaping (HotKeyShortcut) -> Void,
          onRecordingChanged: @escaping (Bool) -> Void = { _ in }) {
         recorder = ShortcutRecordingState(onRecordingChanged: onRecordingChanged)
         form = SettingsFormState(saveDirectory: saveDirectory, shortcut: shortcut)
-        let view = SettingsView(form: form, recorder: recorder,
+        let view = SettingsView(form: form, recorder: recorder, permission: permission,
+                                onRequestPermission: onRequestPermission,
+                                onOpenPermissionSettings: onOpenPermissionSettings,
                                 onDirectoryChanged: onDirectoryChanged, onShortcutChanged: onShortcutChanged)
         let hosting = NSHostingController(rootView: view)
         let window = NSWindow(contentViewController: hosting)
         window.title = "长截图设置"
-        window.setContentSize(NSSize(width: 530, height: 330))
+        window.setContentSize(NSSize(width: 530, height: 530))
         window.styleMask = [.titled, .closable]
         window.isReleasedWhenClosed = false
         window.center()
@@ -46,11 +50,39 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 private struct SettingsView: View {
     @ObservedObject var form: SettingsFormState
     @ObservedObject var recorder: ShortcutRecordingState
+    @ObservedObject var permission: ScreenCapturePermission
+    let onRequestPermission: () -> Void
+    let onOpenPermissionSettings: () -> Void
     let onDirectoryChanged: (URL) -> Void
     let onShortcutChanged: (HotKeyShortcut) -> Void
 
     var body: some View {
         Form {
+            Section("权限") {
+                LabeledContent("屏幕录制") {
+                    Label(permission.isGranted ? "已允许" : "未允许或需重启",
+                          systemImage: permission.isGranted ? "checkmark.circle.fill" : "exclamationmark.circle")
+                        .foregroundStyle(permission.isGranted ? Color.green : Color.secondary)
+                }
+                Text("读取所选区域以拼接长图，不采集音频。允许后若仍不可用，请退出并重新打开应用。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                HStack {
+                    if !permission.isGranted {
+                        Button(permission.isRequesting ? "正在申请…" : "申请屏幕录制权限") {
+                            recorder.cancel()
+                            onRequestPermission()
+                        }
+                        .disabled(permission.isRequesting)
+                    }
+                    Button("打开系统设置") {
+                        recorder.cancel()
+                        onOpenPermissionSettings()
+                    }
+                    Button("检查状态") { permission.refresh() }
+                        .disabled(permission.isRequesting)
+                }
+            }
             Section("保存") {
                 LabeledContent("默认位置") {
                     HStack {
@@ -92,7 +124,7 @@ private struct SettingsView: View {
                 .foregroundStyle(.secondary)
         }
         .formStyle(.grouped)
-        .frame(width: 530, height: 330)
+        .frame(width: 530, height: 530)
     }
 
     private func chooseDirectory() {

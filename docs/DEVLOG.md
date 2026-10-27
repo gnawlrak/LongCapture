@@ -31,3 +31,14 @@ Contract: menu/hotkey -> adjustable single-display selection -> click-through ca
 - Release optimized build and strict ad-hoc signature verification pass. The Release process launches without a normal window; actual capture acceptance remains listed as unverified in `docs/ACCEPTANCE.md`.
 - Local-only test fixtures and build/test scripts are included. No push, cloud, history, automatic scrolling, editor, notarization or update code was added.
 - Stop decision: implementation/build/test delivery is ready; do not invent a passing Safari/TextEdit/WeChat or multi-display acceptance result without the actual permission and user-approved content.
+
+## 2026-10-27 - Slice 4: explicit screen-recording permission
+
+Contract: menu/settings expose permission status, an explicit request, a system privacy-pane link and a refresh action. Starting a capture requests permission before selection; denial leaves the app idle and offers settings guidance. Returning to the app refreshes access. Launch/refresh do not prompt, and an approval response cannot unlock capture unless current-process preflight succeeds.
+
+- Added eight injected tests first. The red run failed because `ScreenCapturePermission` did not exist; after implementation all eight pass. Coverage includes granted/no-repeat, denial, relaunch-required access, external grants/revocation, reentrant prompts and settings-open failure.
+- The observable permission adapter owns the only explicit privacy request. The stream adapter retains a defensive preflight without triggering a second request after selection. No Accessibility, Input Monitoring, microphone or system-permission changes were added.
+- Settings preserve native controls and show the permission section first. Light/dark offscreen AppKit rendering confirms the controls fit; this is not a live TCC prompt test.
+- `swift test`: 36 tests, 0 failures. `./scripts/test.sh`: 49 tests, 0 failures. Logs: `build/permission-tests-red.log`, `build/permission-tests-green.log`, `build/permission-swift-tests.log`, `build/permission-xcode-tests.log`.
+- Release build (`build/permission-release-build.log`) and strict signature verification pass. The previous Release app exited through its normal termination delegate; the new process runs with no normal startup window. System grant/deny interaction and real scrolling acceptance remain explicitly unverified.
+- Jev classification fell back to `keep_current` / `no_key`; deterministic tests, compiler and diff checks were used directly. Stop decision: permission-entry slice is complete; leave actual system authorization to the user.

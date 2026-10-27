@@ -6,13 +6,15 @@
 
 - 捕获边界分片：`swift test`，3 项通过（Retina/负坐标、跨屏拒绝、BGRA 复制与所有权）。
 - 拼接/会话分片：`swift test`，28 项通过。
-- 完整 App/XCTest：`./scripts/test.sh`，41 项通过，0 失败。包含真实 Vision 与 CoreText 的逐像素测试，不只检查图片高度；也包含原生 `NSWindow.performClose`、丢弃按钮和拒绝丢弃后的继续保存。
+- 权限增量：8 项注入测试通过，覆盖不主动弹窗、已授权不重复申请、申请成功/拒绝、重启前仍阻止采集、外部允许/撤销、防重入及系统设置链接失败；`swift test` 当前共 36 项通过。
+- 完整 App/XCTest：`./scripts/test.sh`，49 项通过，0 失败。包含真实 Vision 与 CoreText 的逐像素测试，不只检查图片高度；也包含原生 `NSWindow.performClose`、丢弃按钮和拒绝丢弃后的继续保存。
+- 设置权限区的原生离屏渲染已检查，浅色/深色下状态、申请/打开设置/检查按钮完整显示；这不代表系统授权弹窗已实测。
 - `./scripts/build.sh`：Release 构建成功，原生 arm64 可执行文件；应用包包含 MIT notice。
 - `codesign --verify --deep --strict`：本地 ad-hoc 签名通过。没有公证或商店签名。
 - 已启动 Release 进程并确认持续运行；启动本身不申请屏幕权限，也不产生空白主窗口。这不是实际滚动截图验收。
 - 权限接口静态检查：唯一显式隐私请求为 `CGRequestScreenCaptureAccess`；无 AX、全局输入监视、麦克风、网络 API。音频采集关闭。测试宿主专用 entitlement 不作为 Release 授权交付。
 
-本地日志在 `build/capture-slice-tests.log`、`build/stitching-slice-tests.log`、`build/tests-final.log` 和 `build/release-build.log`；XCTest 结果包在 `build/DerivedData/Logs/Test/`。这些构建产物不入 Git。
+本地日志在 `build/capture-slice-tests.log`、`build/stitching-slice-tests.log`、`build/tests-final.log`、`build/permission-swift-tests.log`、`build/permission-xcode-tests.log` 和 `build/permission-release-build.log`；权限区离屏渲染在 `build/permission-settings-light.png`、`build/permission-settings-dark.png`，XCTest 结果包在 `build/DerivedData/Logs/Test/`。这些构建产物不入 Git。
 
 ## 尚未验证
 
@@ -37,7 +39,7 @@ open -a TextEdit build/Fixtures/LongCapture-test.txt
 ## 手动清单
 
 1. 启动 `build/Release/LongCapture.app`，确认无普通主窗口；菜单图标、开始入口与设置可用。
-2. 在测试文档前按 `⌃⌥S`，框选正文，调整边缘/移动；Esc 取消一次，再重新框选回车开始。首次允许屏幕录制；拒绝时保留菜单并显示正确提示。
+2. 打开菜单栏 → 屏幕录制权限…，检查状态和申请/系统设置按钮。未授权时在测试文档前按 `⌃⌥S`，应先申请权限再框选；拒绝时不显示选框，保留菜单并提供系统设置入口。在系统设置允许后回到应用，状态应刷新；若仍未允许，退出重开。授权后框选正文，调整边缘/移动；Esc 取消一次，再重新框选回车开始。
 3. Safari 向下慢滚，暂停、反向回看、再超出前沿，确认增长不重复；同一路径快滚到无重叠，检查暂停提示并回滚恢复。若未恢复直接结束，预览必须明确提示不完整。
 4. TextEdit 从中间向上滚动，检查导出从早到晚的行号顺序、无裁掉旧内容；反方向回看不增长错误的一端。用图片查看器检查接缝和真实像素分辨率。
 5. 完成后等待 5 秒确认桌面 PNG；另一次悬停暂停、移开继续；另一次点击打开预览并等待，确保不会再自动保存。

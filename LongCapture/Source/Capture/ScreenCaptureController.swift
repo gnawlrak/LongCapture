@@ -51,7 +51,7 @@ final class ScreenCaptureController: CaptureFrameSource {
 
     init(geometry: CaptureGeometry, onFrame: @escaping (CGImage) -> Void,
          onError: @escaping (Error) -> Void) async throws {
-        guard CGPreflightScreenCaptureAccess() || CGRequestScreenCaptureAccess() else {
+        guard CGPreflightScreenCaptureAccess() else {
             throw ScreenCaptureError.permissionDenied
         }
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)

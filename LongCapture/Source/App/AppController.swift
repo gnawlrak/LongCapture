@@ -15,6 +15,8 @@ final class AppController: NSObject {
     private var originalApplication: NSRunningApplication?
     private var activeResult: SessionResult?
     private var saveTask: Task<URL, Error>?
+    private let screenCapturePermission = ScreenCapturePermission()
+    private var isPresentingPermissionAlert = false
     private var isRecordingShortcut = false
     private var observers: [(NotificationCenter, NSObjectProtocol)] = []
     private var saveDirectory = FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first
@@ -35,6 +37,9 @@ final class AppController: NSObject {
         let menu = NSMenu()
         beginMenuItem.target = self
         menu.addItem(beginMenuItem)
+        let permissionItem = NSMenuItem(title: "屏幕录制权限…", action: #selector(showPermissionSettings), keyEquivalent: "")
+        permissionItem.target = self
+        menu.addItem(permissionItem)
         let settingsItem = NSMenuItem(title: "设置…", action: #selector(showSettings), keyEquivalent: ",")
         settingsItem.target = self
         menu.addItem(settingsItem)
@@ -54,11 +59,12 @@ final class AppController: NSObject {
     @objc func beginSelection() {
         if activeResult != nil { openPreview(); return }
         if coordinator.state == .capturing { Task { await coordinator.complete() }; return }
-        guard coordinator.state == .idle else { return }
+        guard coordinator.state == .idle, !screenCapturePermission.isRequesting, !isPresentingPermissionAlert else { return }
         let point = NSEvent.mouseLocation
         guard let screen = NSScreen.screens.first(where: { NSMouseInRect(point, $0.frame, false) }) ?? NSScreen.main,
               let displayID = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID else { return }
         originalApplication = NSWorkspace.shared.frontmostApplication
+        guard requestScreenCapturePermission(), coordinator.state == .idle else { return }
         coordinator.prepareForSelection()
         let displayFrame = screen.frame, scale = screen.backingScaleFactor
         selectionOverlay = SelectionOverlay(displayRect: displayFrame, onBegin: { [weak self] rect in
@@ -120,8 +126,12 @@ final class AppController: NSObject {
     }
 
     @objc func showSettings() {
+        screenCapturePermission.refresh()
         if let settings { settings.showWindow(nil); NSApp.activate(ignoringOtherApps: true); return }
         settings = SettingsWindowController(saveDirectory: saveDirectory, shortcut: shortcut,
+            permission: screenCapturePermission,
+            onRequestPermission: { [weak self] in _ = self?.requestScreenCapturePermission() },
+            onOpenPermissionSettings: { [weak self] in self?.openScreenCaptureSettings() },
             onDirectoryChanged: { [weak self] url in self?.setSaveDirectory(url) },
             onShortcutChanged: { [weak self] value in self?.changeShortcut(value) },
             onRecordingChanged: { [weak self] recording in
@@ -132,6 +142,37 @@ final class AppController: NSObject {
             })
         settings?.showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    @objc private func showPermissionSettings() { showSettings() }
+
+    private func requestScreenCapturePermission() -> Bool {
+        guard !screenCapturePermission.isRequesting, !isPresentingPermissionAlert else { return false }
+        if screenCapturePermission.refresh() { return true }
+        NSApp.activate(ignoringOtherApps: true)
+        if screenCapturePermission.request() { return true }
+        presentPermissionGuidance()
+        return false
+    }
+
+    private func presentPermissionGuidance() {
+        guard !isPresentingPermissionAlert else { return }
+        isPresentingPermissionAlert = true
+        defer { isPresentingPermissionAlert = false }
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "需要屏幕录制权限"
+        alert.informativeText = "长截图需要读取所选区域才能拼接长图，不采集音频。请在系统设置 → 隐私与安全性 → 屏幕录制（或屏幕与系统录音录制）中允许「长截图」。若已允许但仍不可用，请退出并重新打开应用，然后再次开始截图。"
+        alert.addButton(withTitle: "打开系统设置")
+        alert.addButton(withTitle: "暂不")
+        if alert.runModal() == .alertFirstButtonReturn { openScreenCaptureSettings() }
+    }
+
+    private func openScreenCaptureSettings() {
+        if !screenCapturePermission.openSystemSettings() {
+            alert(title: "无法打开系统设置", message: "请手动打开系统设置 → 隐私与安全性 → 屏幕录制，并允许「长截图」。")
+        }
     }
 
     private func changeShortcut(_ value: HotKeyShortcut) {
@@ -241,6 +282,11 @@ final class AppController: NSObject {
     private func showCaptureError(_ error: Error) {
         captureOverlay?.close(); captureOverlay = nil
         selectionOverlay?.close(); selectionOverlay = nil
+        if let captureError = error as? ScreenCaptureError, case .permissionDenied = captureError {
+            screenCapturePermission.refresh()
+            presentPermissionGuidance()
+            return
+        }
         alert(title: "长截图未完成", message: error.localizedDescription)
     }
 
@@ -255,6 +301,10 @@ final class AppController: NSObject {
 
     private func observeInterruptions() {
         let center = NotificationCenter.default
+        observers.append((center, center.addObserver(forName: NSApplication.didBecomeActiveNotification,
+            object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in self?.screenCapturePermission.refresh() }
+            }))
         observers.append((center, center.addObserver(forName: NSApplication.didChangeScreenParametersNotification,
             object: nil, queue: .main) { [weak self] _ in
                 Task { @MainActor in await self?.interrupted("显示器配置发生变化。") }

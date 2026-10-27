@@ -3,6 +3,7 @@
 ## Boundaries
 
 - `AppController`: menu-bar entry, one unresolved result, settings persistence, save serialization and interruption notifications. It never processes screen pixels on the main actor.
+- `ScreenCapturePermission`: injectable preflight/request/settings adapters with observable current-process access and reentrant-request protection. Launch and refresh never prompt. Menu/settings expose explicit requests; capture requests access before selection, denial offers the system privacy pane, and app activation refreshes the status. The stream adapter defensively rechecks without prompting after selection.
 - `SelectionOverlay`: one display, AppKit bottom-left global selection, local resize/move handles, Return/Escape. `CaptureGeometry` validates and pixel-aligns the rectangle, then converts to ScreenCaptureKit's display-local top-left coordinates.
 - `ScreenCaptureController`: injectable `CaptureFrameSource`; ~15 fps ScreenCaptureKit stream, sRGB BGRA, own-application/cursor/audio exclusion. A nonisolated output adapter accepts only complete frames and copies locked pixel buffers before releasing surfaces.
 - `FrameProcessingPipeline`: dedicated serial queue, one in-flight and at most one latest pending immutable image. Finish closes intake after source shutdown/barrier, drains the tail, then renders. Cancel drops pending frames. Main-actor session generation and state checks suppress late callbacks.
@@ -24,6 +25,7 @@
 6. Ending includes the latest accepted pending complete frame. Cancelling invalidates the generation before awaiting source shutdown.
 7. An active result outlives a failed save and blocks new capture. Save, close and discard are idempotent at the owning UI boundary.
 8. No screenshot or document content is sent anywhere. There is no networking code or third-party runtime package.
+9. A permission request's acknowledgement is not sufficient to unlock capture: current-process preflight must succeed. Only screen-recording access is explicitly requested, and no system permission is modified on the user's behalf.
 
 ## Build
 

@@ -11,6 +11,6 @@ let package = Package(
                 sources: ["Capture", "Core/Stitching.swift", "Core/StitchingController.swift", "Core/SessionCoordinator.swift"]),
         .testTarget(name: "LongCaptureTests", dependencies: ["LongCapture"], path: "LongCapture/Tests",
                     exclude: ["ResultFlowTests.swift"],
-                    sources: ["CaptureGeometryTests.swift", "LongCaptureImageTests.swift", "StitchingTests.swift", "SessionControllerTests.swift"])
+                    sources: ["CaptureGeometryTests.swift", "ScreenCapturePermissionTests.swift", "LongCaptureImageTests.swift", "StitchingTests.swift", "SessionControllerTests.swift"])
     ]
 )
