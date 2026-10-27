@@ -9,3 +9,7 @@ DerivedData/
 # SwiftPM local core checks
 .build/
 .swiftpm/
+
+# Python cache
+__pycache__/
+*.pyc

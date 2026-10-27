@@ -20,3 +20,14 @@ Contract: first reliable movement locks the growing side; the viewport anchor mo
 - `swift test` with capture/core/session: 28 tests, 0 failures. Log: `build/stitching-slice-tests.log`.
 - Completely periodic frames remain intrinsically ambiguous; no guessed movement is committed. Real Safari/TextEdit/WeChat capture is not claimed by these tests.
 - Next slice decision: finish native result UI, lossless no-overwrite saving and Release app integration, with no editor/history/cloud scope expansion.
+
+## 2026-10-27 - Slice 3: native app and retained results
+
+Contract: menu/hotkey -> adjustable single-display selection -> click-through capture border and Done/Cancel panel -> captured-display thumbnail. A 5-second untouched result saves a lossless PNG; hover pauses, click opens a read-only native preview, normal close saves once, and explicit acknowledged discard never saves. Save failure preserves the only active result and permits directory change/retry.
+
+- Native AppKit selection/toolbar/thumbnail/scroll-and-zoom preview and SwiftUI folder/hotkey settings are wired into the shared Xcode scheme. App delegate and status item are retained correctly. Carbon registration failures retain the menu entry.
+- Result model tests preceded implementation. Added atomic no-replace PNG publication/cleanup, clock injection, actual preview close/discard actions, exact-hover-deadline regression, declined-discard protection and settings-state refresh.
+- Full Xcode suite: 41 tests, 0 failures. The earlier BGRA assertion incorrectly compared sRGB numbers after conversion into the display-dependent deviceRGB space; it was replaced by exact owned BGRA bytes, sRGB profile and normalized core RGBA pixel tests, not a looser tolerance.
+- Release optimized build and strict ad-hoc signature verification pass. The Release process launches without a normal window; actual capture acceptance remains listed as unverified in `docs/ACCEPTANCE.md`.
+- Local-only test fixtures and build/test scripts are included. No push, cloud, history, automatic scrolling, editor, notarization or update code was added.
+- Stop decision: implementation/build/test delivery is ready; do not invent a passing Safari/TextEdit/WeChat or multi-display acceptance result without the actual permission and user-approved content.

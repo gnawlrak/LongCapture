@@ -1,13 +1,56 @@
-# LongCapture
+# 长截图 / LongCapture
 
-A focused macOS 14+ native scrolling screenshot app, written in Swift.
+macOS 14+ 原生菜单栏应用，Swift + AppKit + SwiftUI，无第三方运行时依赖。只做手动滚动长截图。
 
-The app captures a fixed vertical screen region, lets the user scroll manually, stitches confirmed content up or down, then shows a system-like thumbnail that saves a PNG by default or opens a read-only preview.
+## 构建与启动
 
-## Development
+需要 Xcode 16 或更新版本，选择命令行工具后运行：
 
-Open `LongCapture.xcodeproj`, select the `LongCapture` scheme, and build with Command-B.
+```sh
+./scripts/build.sh
+open build/Release/LongCapture.app
+```
 
-Tests run with `xcodebuild test -project LongCapture.xcodeproj -scheme LongCapture -destination 'platform=macOS'`.
+也可打开 `LongCapture.xcodeproj`，运行共享的 `LongCapture` scheme。没有空白主窗口，入口在菜单栏的虚线矩形图标。
 
-The implementation reuses only compatible concepts from ScrollSnap, an MIT-licensed Swift project. See `THIRD_PARTY_NOTICES.md` for attribution.
+## 使用
+
+1. 将鼠标移到要采集的显示器，按 `⌃⌥S`，或点击菜单栏 → 开始长截图。
+2. 拖动框选**正文滚动区域**。拖动内部移动，拖动边缘调整，回车开始，Esc 取消。选框不能跨屏；避开固定标题、侧栏、输入框、滚动条和动画。最小选区 24 × 24 点且不小于 96 × 64 像素。
+3. 在原应用中手动缓慢滚动。选框边界完全穿透鼠标，小工具条有完成和取消按钮；再次按快捷键也可完成。
+4. 首次可靠移动决定本次向上或向下增长。反向回看不会重复加入、裁掉已有内容或改变方向；回到原方向并超过已采边界后才继续增长。
+5. 匹配暂停时，往回滚到最后可靠画面，再慢慢继续。此时直接完成，只导出已确认部分，并在缩略图/预览中提示不完整。
+6. 结束后右下角缩略图约 5 秒自动保存；悬停暂停，移开后继续剩余时间；点击立即打开原生预览。预览支持滚动、缩放、复制、保存和丢弃；没有编辑功能。完成或普通关闭会保存，丢弃不会保存。
+
+默认保存桌面，菜单栏 → 设置中可修改目录和全局快捷键。输出原始像素 sRGB PNG，时间戳命名，同名自动递增、绝不覆盖；不自动写入剪贴板。
+
+## 权限与安全
+
+- 采集首次请求**屏幕录制**。拒绝后可在系统设置 → 隐私与安全性 → 屏幕与系统录音录制中允许「长截图」，必要时重启应用。
+- 不调用辅助功能、全局输入监听、麦克风、录音或网络接口；快捷键用 Carbon 系统热键，设置录入仅监听本应用的按键。
+- 屏幕流排除本应用界面和鼠标指针，只接收完整帧，后台串行匹配，最多保留一个最新待处理帧。
+- 桌面/文稿属于 macOS 受保护目录；系统可能额外询问文件夹访问。这不是辅助功能或输入监控权限。保存失败时截图仍保留，可在预览选择其他目录并重试。
+- 未保存或丢弃的结果阻止下一次采集；保存中禁止丢弃。退出时也会尝试保存，失败不退出。
+- 输出最多 **64,000,000 像素或 50,000 像素高度**，先到者为准。达到上限、锁屏、睡眠、显示器变化或采集流中断时，安全结束并保留确认部分。
+
+## 测试
+
+```sh
+./scripts/test.sh
+```
+
+`swift test` 也可独立运行捕获/拼接/会话的 28 项快速测试（不包含结果界面）；完整验收使用上面的 Xcode 命令。
+
+XCTest 覆盖真实 Vision 配准与注入位移的逐像素拼接、向上/向下/反向回看、1–3px 慢滚、Retina/BGRA、空白/重复/动画/无重叠拒绝与恢复、精确双上限、最新帧背压、结束尾帧、取消迟到帧、启动/结束竞态、拒绝权限、流中断，以及缩略图计时与预览关闭/丢弃、无覆盖原子 PNG 保存、不可写目录。
+
+本机人工验收清单与当前验证记录见 `docs/ACCEPTANCE.md`；结构与约束见 `docs/ARCHITECTURE.md`。不要把合成帧/单元测试通过等同于 Safari、TextEdit 或微信实测通过。
+
+## 边界
+
+仅支持单个显示器内的单个纵向滚动区域。没有自动滚动、录屏文件、OCR、标注、云服务、图库、商店上架、公证或自动更新。移动/缩放原窗口、无重叠快滚、完全重复图案、固定栏或持续动画可能需要恢复或重新采集。完全相同的周期画面与静止在视觉上无法区分，软件保守不增长，不猜测缺失内容。
+
+应用只在内存中保留待处理截图；正常保存/丢弃后释放。PNG 在目标目录以私有临时文件完成写入，再原子发布；保存失败时清理该临时文件。意外断电/强制结束进程不能保证恢复未保存截图。
+
+## 许可与复用
+
+有限借鉴 [ScrollSnap 固定提交](https://github.com/Brkgng/ScrollSnap/tree/5be0a28f679358be658d4139d16465307f906c87) 的 Vision 配准、显示器局部坐标和会话尾帧调度思路；不沿用其反向滚动裁图或产品结构。MIT 声明保存在 `THIRD_PARTY_NOTICES.md`，并包含在应用包中。

@@ -1,0 +1,8 @@
+#!/bin/bash
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+xcodebuild -project "$ROOT/LongCapture.xcodeproj" -scheme LongCapture \
+  -configuration Release -destination "platform=macOS,arch=$(uname -m)" \
+  -derivedDataPath "$ROOT/build/DerivedData" \
+  CONFIGURATION_BUILD_DIR="$ROOT/build/Release" ONLY_ACTIVE_ARCH=YES build
+printf '\nApp: %s/build/Release/LongCapture.app\n' "$ROOT"

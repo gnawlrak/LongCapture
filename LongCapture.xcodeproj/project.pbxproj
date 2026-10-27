@@ -1,0 +1,107 @@
+// !$*UTF8*$!
+{ archiveVersion = 1; classes = {}; objectVersion = 77; objects = {
+		F020_r = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "LongCapture/Tests/CaptureGeometryTests.swift"; sourceTree = SOURCE_ROOT; };
+		F020_s = {isa = PBXBuildFile; fileRef = F020_r; };
+		F019_r = {isa = PBXFileReference; lastKnownFileType = text; path = THIRD_PARTY_NOTICES.md; sourceTree = SOURCE_ROOT; };
+		F019_s = {isa = PBXBuildFile; fileRef = F019_r; };
+		F018_r = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "LongCapture/Tests/ResultFlowTests.swift"; sourceTree = SOURCE_ROOT; };
+		F018_s = {isa = PBXBuildFile; fileRef = F018_r; };
+		F017_r = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "LongCapture/Source/Core/ResultStore.swift"; sourceTree = SOURCE_ROOT; };
+		F017_s = {isa = PBXBuildFile; fileRef = F017_r; };
+		F016_r = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "LongCapture/Source/Core/ResultLifecycle.swift"; sourceTree = SOURCE_ROOT; };
+		F016_s = {isa = PBXBuildFile; fileRef = F016_r; };
+		Source/App/AppController.swift /* AppController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "LongCapture/Source/App/AppController.swift"; sourceTree = SOURCE_ROOT; };
+		F001_s = {isa = PBXBuildFile; fileRef = Source/App/AppController.swift /* AppController.swift */; };
+		Source/App/HotKey.swift /* HotKey.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "LongCapture/Source/App/HotKey.swift"; sourceTree = SOURCE_ROOT; };
+		F002_s = {isa = PBXBuildFile; fileRef = Source/App/HotKey.swift /* HotKey.swift */; };
+		Source/App/LongCaptureApp.swift /* LongCaptureApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "LongCapture/Source/App/LongCaptureApp.swift"; sourceTree = SOURCE_ROOT; };
+		F003_s = {isa = PBXBuildFile; fileRef = Source/App/LongCaptureApp.swift /* LongCaptureApp.swift */; };
+		Source/Capture/ScreenCaptureController.swift /* ScreenCaptureController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "LongCapture/Source/Capture/ScreenCaptureController.swift"; sourceTree = SOURCE_ROOT; };
+		F004_s = {isa = PBXBuildFile; fileRef = Source/Capture/ScreenCaptureController.swift /* ScreenCaptureController.swift */; };
+		Source/Core/SessionCoordinator.swift /* SessionCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "LongCapture/Source/Core/SessionCoordinator.swift"; sourceTree = SOURCE_ROOT; };
+		F005_s = {isa = PBXBuildFile; fileRef = Source/Core/SessionCoordinator.swift /* SessionCoordinator.swift */; };
+		Source/Core/Stitching.swift /* Stitching.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "LongCapture/Source/Core/Stitching.swift"; sourceTree = SOURCE_ROOT; };
+		F006_s = {isa = PBXBuildFile; fileRef = Source/Core/Stitching.swift /* Stitching.swift */; };
+		Source/Core/StitchingController.swift /* StitchingController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "LongCapture/Source/Core/StitchingController.swift"; sourceTree = SOURCE_ROOT; };
+		F007_s = {isa = PBXBuildFile; fileRef = Source/Core/StitchingController.swift /* StitchingController.swift */; };
+		Source/UI/CaptureOverlay.swift /* CaptureOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "LongCapture/Source/UI/CaptureOverlay.swift"; sourceTree = SOURCE_ROOT; };
+		F008_s = {isa = PBXBuildFile; fileRef = Source/UI/CaptureOverlay.swift /* CaptureOverlay.swift */; };
+		Source/UI/PreviewWindow.swift /* PreviewWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "LongCapture/Source/UI/PreviewWindow.swift"; sourceTree = SOURCE_ROOT; };
+		F009_s = {isa = PBXBuildFile; fileRef = Source/UI/PreviewWindow.swift /* PreviewWindow.swift */; };
+		Source/UI/ResultThumbnail.swift /* ResultThumbnail.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "LongCapture/Source/UI/ResultThumbnail.swift"; sourceTree = SOURCE_ROOT; };
+		F010_s = {isa = PBXBuildFile; fileRef = Source/UI/ResultThumbnail.swift /* ResultThumbnail.swift */; };
+		Source/UI/SelectionOverlay.swift /* SelectionOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "LongCapture/Source/UI/SelectionOverlay.swift"; sourceTree = SOURCE_ROOT; };
+		F011_s = {isa = PBXBuildFile; fileRef = Source/UI/SelectionOverlay.swift /* SelectionOverlay.swift */; };
+		Source/UI/SettingsWindow.swift /* SettingsWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "LongCapture/Source/UI/SettingsWindow.swift"; sourceTree = SOURCE_ROOT; };
+		F012_s = {isa = PBXBuildFile; fileRef = Source/UI/SettingsWindow.swift /* SettingsWindow.swift */; };
+		Tests/LongCaptureImageTests.swift /* LongCaptureImageTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "LongCapture/Tests/LongCaptureImageTests.swift"; sourceTree = SOURCE_ROOT; };
+		F013_s = {isa = PBXBuildFile; fileRef = Tests/LongCaptureImageTests.swift /* LongCaptureImageTests.swift */; };
+		Tests/SessionControllerTests.swift /* SessionControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "LongCapture/Tests/SessionControllerTests.swift"; sourceTree = SOURCE_ROOT; };
+		F014_s = {isa = PBXBuildFile; fileRef = Tests/SessionControllerTests.swift /* SessionControllerTests.swift */; };
+		Tests/StitchingTests.swift /* StitchingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "LongCapture/Tests/StitchingTests.swift"; sourceTree = SOURCE_ROOT; };
+		F015_s = {isa = PBXBuildFile; fileRef = Tests/StitchingTests.swift /* StitchingTests.swift */; };
+		LongCaptureTests.xctest /* LongCaptureTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; path = LongCaptureTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		LongCapture.app /* LongCapture.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; path = LongCapture.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		LongCaptureTests /* LongCaptureTests */ = {isa = PBXGroup; children = (
+			F020_r,
+			F018_r /* ResultFlowTests.swift */,
+			Tests/LongCaptureImageTests.swift /* LongCaptureImageTests.swift */,
+			Tests/SessionControllerTests.swift /* SessionControllerTests.swift */,
+			Tests/StitchingTests.swift /* StitchingTests.swift */,
+		); path = Tests; sourceTree = "<group>"; };
+		LongCapture /* LongCapture */ = {isa = PBXGroup; children = (
+			F017_r /* ResultStore.swift */,
+			F016_r /* ResultLifecycle.swift */,
+			Source/App/AppController.swift /* AppController.swift */,
+			Source/App/HotKey.swift /* HotKey.swift */,
+			Source/App/LongCaptureApp.swift /* LongCaptureApp.swift */,
+			Source/Capture/ScreenCaptureController.swift /* ScreenCaptureController.swift */,
+			Source/Core/SessionCoordinator.swift /* SessionCoordinator.swift */,
+			Source/Core/Stitching.swift /* Stitching.swift */,
+			Source/Core/StitchingController.swift /* StitchingController.swift */,
+			Source/UI/CaptureOverlay.swift /* CaptureOverlay.swift */,
+			Source/UI/PreviewWindow.swift /* PreviewWindow.swift */,
+			Source/UI/ResultThumbnail.swift /* ResultThumbnail.swift */,
+			Source/UI/SelectionOverlay.swift /* SelectionOverlay.swift */,
+			Source/UI/SettingsWindow.swift /* SettingsWindow.swift */,
+		); path = Source; sourceTree = "<group>"; };
+		LongCaptureTestsTarget = {isa = PBXNativeTarget; buildConfigurationList = LongCaptureTestsConfigList; buildPhases = (LongCaptureTestsSources,); buildRules = (); dependencies = (LongCaptureDependency,); name = LongCaptureTests; productName = LongCaptureTests; productReference = LongCaptureTests.xctest; productType = "com.apple.product-type.bundle.unit-test"; };
+		LongCaptureTarget = {isa = PBXNativeTarget; buildConfigurationList = LongCaptureConfigList; buildPhases = (LongCaptureSources, LongCaptureResources); buildRules = (); dependencies = (); name = LongCapture; productName = LongCapture; productReference = LongCapture.app; productType = "com.apple.product-type.application"; };
+		LongCaptureSources = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (
+			F017_s,
+			F016_s,
+			F001_s,
+			F002_s,
+			F003_s,
+			F004_s,
+			F005_s,
+			F006_s,
+			F007_s,
+			F008_s,
+			F009_s,
+			F010_s,
+			F011_s,
+			F012_s,
+		); runOnlyForDeploymentPostprocessing = 0; };
+		LongCaptureTestsSources = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (
+			F020_s,
+			F018_s,
+			F013_s,
+			F014_s,
+			F015_s,
+		); runOnlyForDeploymentPostprocessing = 0; };
+		LongCaptureResources = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (F019_s,); runOnlyForDeploymentPostprocessing = 0; };
+		LongCaptureConfig = {isa = XCBuildConfiguration; buildSettings = {CLANG_ENABLE_MODULES = YES; CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 1; DEVELOPMENT_TEAM = ""; ENABLE_TESTABILITY = YES; ENABLE_HARDENED_RUNTIME = YES; GENERATE_INFOPLIST_FILE = YES; INFOPLIST_KEY_CFBundleDisplayName = "长截图"; INFOPLIST_KEY_LSUIElement = YES; MACOSX_DEPLOYMENT_TARGET = 14.0; MARKETING_VERSION = 1.0; PRODUCT_BUNDLE_IDENTIFIER = com.gnawlrak.LongCapture; PRODUCT_NAME = LongCapture; SWIFT_VERSION = 5.0; }; name = Debug; };
+		LongCaptureConfigRelease = {isa = XCBuildConfiguration; buildSettings = {CLANG_ENABLE_MODULES = YES; CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO; CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 1; DEVELOPMENT_TEAM = ""; ENABLE_HARDENED_RUNTIME = YES; GENERATE_INFOPLIST_FILE = YES; INFOPLIST_KEY_CFBundleDisplayName = "长截图"; INFOPLIST_KEY_LSUIElement = YES; MACOSX_DEPLOYMENT_TARGET = 14.0; MARKETING_VERSION = 1.0; PRODUCT_BUNDLE_IDENTIFIER = com.gnawlrak.LongCapture; PRODUCT_NAME = LongCapture; SWIFT_VERSION = 5.0; }; name = Release; };
+		LongCaptureTestsConfig = {isa = XCBuildConfiguration; buildSettings = {BUNDLE_LOADER = "$(TEST_HOST)"; CODE_SIGN_STYLE = Automatic; DEVELOPMENT_TEAM = ""; GENERATE_INFOPLIST_FILE = YES; MACOSX_DEPLOYMENT_TARGET = 14.0; PRODUCT_BUNDLE_IDENTIFIER = com.gnawlrak.LongCaptureTests; PRODUCT_NAME = LongCaptureTests; SWIFT_MODULE_NAME = LongCaptureTests; SWIFT_VERSION = 5.0; TEST_HOST = "$(BUILT_PRODUCTS_DIR)/LongCapture.app/Contents/MacOS/LongCapture"; }; name = Debug; };
+		LongCaptureTestsConfigRelease = {isa = XCBuildConfiguration; buildSettings = {BUNDLE_LOADER = "$(TEST_HOST)"; CODE_SIGN_STYLE = Automatic; DEVELOPMENT_TEAM = ""; GENERATE_INFOPLIST_FILE = YES; MACOSX_DEPLOYMENT_TARGET = 14.0; PRODUCT_BUNDLE_IDENTIFIER = com.gnawlrak.LongCaptureTests; PRODUCT_NAME = LongCaptureTests; SWIFT_MODULE_NAME = LongCaptureTests; SWIFT_VERSION = 5.0; TEST_HOST = "$(BUILT_PRODUCTS_DIR)/LongCapture.app/Contents/MacOS/LongCapture"; }; name = Release; };
+		LongCaptureConfigList = {isa = XCConfigurationList; buildConfigurations = (LongCaptureConfig, LongCaptureConfigRelease); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		LongCaptureTestsConfigList = {isa = XCConfigurationList; buildConfigurations = (LongCaptureTestsConfig, LongCaptureTestsConfigRelease); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		LongCaptureProject = {isa = PBXProject; attributes = {BuildIndependentTargetsInParallel = YES; LastSwiftUpdateCheck = 2700; LastUpgradeCheck = 2700;}; buildConfigurationList = LongCaptureProjectConfigList; buildRules = (); compatibilityVersion = "Xcode 16.0"; developmentRegion = en; knownRegions = (en, Base,); mainGroup = MainGroup; productRefGroup = ProductsGroup; projectDirPath = ""; projectRoot = ""; targets = (LongCaptureTarget, LongCaptureTestsTarget,); };
+		LongCaptureProjectConfigList = {isa = XCConfigurationList; buildConfigurations = (LongCaptureProjectConfig, LongCaptureProjectConfigRelease); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		LongCaptureProjectConfig = {isa = XCBuildConfiguration; buildSettings = {ALWAYS_SEARCH_USER_PATHS = NO; CLANG_ENABLE_MODULES = YES; GCC_C_LANGUAGE_STANDARD = gnu17; MACOSX_DEPLOYMENT_TARGET = 14.0; SDKROOT = macosx; ONLY_ACTIVE_ARCH = YES; SWIFT_OPTIMIZATION_LEVEL = "-Onone"; SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG; DEBUG_INFORMATION_FORMAT = dwarf; SWIFT_VERSION = 5.0; }; name = Debug; };
+		LongCaptureProjectConfigRelease = {isa = XCBuildConfiguration; buildSettings = {ALWAYS_SEARCH_USER_PATHS = NO; CLANG_ENABLE_MODULES = YES; GCC_C_LANGUAGE_STANDARD = gnu17; MACOSX_DEPLOYMENT_TARGET = 14.0; SDKROOT = macosx; SWIFT_VERSION = 5.0; }; name = Release; };
+		ProductsGroup = {isa = PBXGroup; children = (LongCapture.app, LongCaptureTests.xctest,); name = Products; sourceTree = "<group>"; };
+		LongCaptureDependency = {isa = PBXTargetDependency; target = LongCaptureTarget; };
+		MainGroup = {isa = PBXGroup; children = (LongCapture, LongCaptureTests, ProductsGroup, F019_r,); sourceTree = "<group>"; };
+	}; rootObject = LongCaptureProject; }
