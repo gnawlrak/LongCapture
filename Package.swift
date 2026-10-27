@@ -7,9 +7,10 @@ let package = Package(
     products: [.library(name: "LongCaptureCore", targets: ["LongCapture"])],
     targets: [
         .target(name: "LongCapture", path: "LongCapture/Source",
-                exclude: ["App", "Core", "UI"], sources: ["Capture"]),
+                exclude: ["App", "Core/ResultLifecycle.swift", "Core/ResultStore.swift", "UI"],
+                sources: ["Capture", "Core/Stitching.swift", "Core/StitchingController.swift", "Core/SessionCoordinator.swift"]),
         .testTarget(name: "LongCaptureTests", dependencies: ["LongCapture"], path: "LongCapture/Tests",
-                    exclude: ["LongCaptureImageTests.swift", "StitchingTests.swift", "SessionControllerTests.swift", "ResultFlowTests.swift"],
-                    sources: ["CaptureGeometryTests.swift"])
+                    exclude: ["ResultFlowTests.swift"],
+                    sources: ["CaptureGeometryTests.swift", "LongCaptureImageTests.swift", "StitchingTests.swift", "SessionControllerTests.swift"])
     ]
 )
