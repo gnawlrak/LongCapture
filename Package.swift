@@ -10,7 +10,7 @@ let package = Package(
                 exclude: ["App", "Core/ResultLifecycle.swift", "Core/ResultStore.swift", "UI"],
                 sources: ["Capture", "Core/Stitching.swift", "Core/StitchingController.swift", "Core/SessionCoordinator.swift"]),
         .testTarget(name: "LongCaptureTests", dependencies: ["LongCapture"], path: "LongCapture/Tests",
-                    exclude: ["ResultFlowTests.swift"],
+                    exclude: ["ResultFlowTests.swift", "GlassInterfaceTests.swift"],
                     sources: ["CaptureGeometryTests.swift", "ScreenCapturePermissionTests.swift", "LongCaptureImageTests.swift", "StitchingTests.swift", "SessionControllerTests.swift"])
     ]
 )

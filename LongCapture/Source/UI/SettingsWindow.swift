@@ -20,10 +20,26 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
                                 onOpenPermissionSettings: onOpenPermissionSettings,
                                 onDirectoryChanged: onDirectoryChanged, onShortcutChanged: onShortcutChanged)
         let hosting = NSHostingController(rootView: view)
-        let window = NSWindow(contentViewController: hosting)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 570, height: 720),
+                              styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+        let surface = NativeGlassView(cornerRadius: 0, interactive: false, legacyMaterial: .windowBackground)
+        let container = NSViewController()
+        container.view = surface
+        container.addChild(hosting)
+        let hosted = hosting.view
+        hosted.translatesAutoresizingMaskIntoConstraints = false
+        surface.contentView.addSubview(hosted)
+        NSLayoutConstraint.activate([
+            hosted.leadingAnchor.constraint(equalTo: surface.contentView.leadingAnchor),
+            hosted.trailingAnchor.constraint(equalTo: surface.contentView.trailingAnchor),
+            hosted.topAnchor.constraint(equalTo: surface.contentView.topAnchor),
+            hosted.bottomAnchor.constraint(equalTo: surface.contentView.bottomAnchor)
+        ])
+        window.contentViewController = container
         window.title = "长截图设置"
-        window.setContentSize(NSSize(width: 530, height: 650))
-        window.styleMask = [.titled, .closable]
+        window.setContentSize(NSSize(width: 570, height: 720))
+        window.contentMinSize = NSSize(width: 530, height: 620)
+        NativeUI.prepareWindow(window)
         window.isReleasedWhenClosed = false
         window.center()
         super.init(window: window)
@@ -57,6 +73,29 @@ private struct SettingsView: View {
     let onShortcutChanged: (HotKeyShortcut) -> Void
 
     var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                Image(systemName: "rectangle.dashed")
+                    .font(.system(size: 26, weight: .medium))
+                    .foregroundStyle(.tint)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("长截图").font(.title2.weight(.semibold))
+                    Text("框选，滚动，留住完整内容。")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+            .padding(.horizontal, 28)
+            .padding(.top, 22)
+            .padding(.bottom, 8)
+            settingsForm
+        }
+        .background(.clear)
+    }
+
+    private var settingsForm: some View {
         Form {
             Section("权限") {
                 LabeledContent("屏幕录制") {
@@ -79,17 +118,17 @@ private struct SettingsView: View {
                 .textSelection(.enabled)
                 HStack {
                     if !permission.isGranted {
-                        Button(permission.isRequesting ? "正在申请…" : "申请屏幕录制权限") {
+                        GlassSettingsButton(permission.isRequesting ? "正在申请…" : "申请屏幕录制权限", prominent: true) {
                             recorder.cancel()
                             onRequestPermission()
                         }
                         .disabled(permission.isRequesting)
                     }
-                    Button("打开系统设置") {
+                    GlassSettingsButton("打开系统设置") {
                         recorder.cancel()
                         onOpenPermissionSettings()
                     }
-                    Button("检查状态") { permission.refresh() }
+                    GlassSettingsButton("检查状态") { permission.refresh() }
                         .disabled(permission.isRequesting)
                 }
             }
@@ -101,7 +140,7 @@ private struct SettingsView: View {
                             .truncationMode(.middle)
                             .foregroundStyle(.secondary)
                             .textSelection(.enabled)
-                        Button("选择…", action: chooseDirectory)
+                        GlassSettingsButton("选择…", action: chooseDirectory)
                     }
                 }
                 Text("输出原始像素分辨率 PNG，不覆盖同名文件。")
@@ -121,7 +160,7 @@ private struct SettingsView: View {
                         .font(.caption)
                         .foregroundStyle(recorder.message == nil ? Color.secondary : Color.orange)
                     Spacer()
-                    Button("恢复默认") {
+                    GlassSettingsButton("恢复默认") {
                         recorder.cancel()
                         form.shortcut = .defaultShortcut
                         onShortcutChanged(form.shortcut)
@@ -134,7 +173,8 @@ private struct SettingsView: View {
                 .foregroundStyle(.secondary)
         }
         .formStyle(.grouped)
-        .frame(width: 530, height: 650)
+        .scrollContentBackground(.hidden)
+        .background(.clear)
     }
 
     private func chooseDirectory() {
@@ -149,6 +189,28 @@ private struct SettingsView: View {
         if panel.runModal() == .OK, let url = panel.url {
             form.saveDirectory = url
             onDirectoryChanged(url)
+        }
+    }
+}
+
+@MainActor
+private struct GlassSettingsButton: View {
+    private let title: String
+    private let prominent: Bool
+    private let action: () -> Void
+
+    init(_ title: String, prominent: Bool = false, action: @escaping () -> Void) {
+        self.title = title
+        self.prominent = prominent
+        self.action = action
+    }
+
+    var body: some View {
+        if #available(macOS 26.0, *) {
+            if prominent { Button(title, action: action).buttonStyle(.glassProminent) }
+            else { Button(title, action: action).buttonStyle(.glass) }
+        } else {
+            Button(title, action: action).buttonStyle(.bordered)
         }
     }
 }
@@ -229,7 +291,8 @@ private struct ShortcutRecorderButton: NSViewRepresentable {
 
     func makeNSView(context: Context) -> NSButton {
         let button = NSButton(title: shortcut.displayName, target: context.coordinator, action: #selector(Coordinator.clicked(_:)))
-        button.bezelStyle = .rounded
+        NativeUI.styleAction(button)
+        button.controlSize = .regular
         button.setAccessibilityLabel("录入全局快捷键")
         return button
     }

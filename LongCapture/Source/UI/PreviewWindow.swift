@@ -24,8 +24,9 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate {
                               styleMask: [.titled, .closable, .resizable, .miniaturizable],
                               backing: .buffered, defer: false)
         window.title = "长截图预览"
-        window.minSize = NSSize(width: 650, height: 420)
+        window.minSize = NSSize(width: 700, height: 460)
         window.isReleasedWhenClosed = false
+        NativeUI.prepareWindow(window)
         window.center()
         super.init(window: window)
         window.delegate = self
@@ -56,13 +57,15 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate {
 
     private func buildContent(warning: String?) {
         guard let window else { return }
-        let root = NSView()
-        window.contentView = root
+        let surface = NativeGlassView(cornerRadius: 0, interactive: false, legacyMaterial: .windowBackground)
+        window.contentView = surface
+        let root = surface.contentView
         let dimensions = NSTextField(labelWithString: "\(Int(image.size.width)) × \(Int(image.size.height)) 像素")
         dimensions.textColor = .secondaryLabelColor
         dimensions.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
         let copy = NSButton(title: "复制", image: NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: nil)!,
                             target: self, action: #selector(copyClicked))
+        NativeUI.styleAction(copy)
         copy.keyEquivalent = "c"
         copy.keyEquivalentModifierMask = [.command]
         for (name, tag) in [("适合宽度", 0), ("25%", 25), ("50%", 50), ("100%", 100), ("200%", 200), ("400%", 400)] {
@@ -71,8 +74,16 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate {
         }
         zoomMenu.target = self
         zoomMenu.action = #selector(zoomChanged)
+        NativeUI.styleAction(zoomMenu)
         zoomMenu.setAccessibilityLabel("预览缩放")
-        let top = NSStackView(views: [dimensions, NSView(), copy, zoomMenu])
+        zoomMenu.controlSize = .large
+        let heading = NSTextField(labelWithString: "长截图")
+        heading.font = .systemFont(ofSize: 18, weight: .semibold)
+        let imageInfo = NSStackView(views: [heading, dimensions])
+        imageInfo.orientation = .vertical
+        imageInfo.alignment = .leading
+        imageInfo.spacing = 3
+        let top = NSStackView(views: [imageInfo, NSView(), copy, zoomMenu])
         top.orientation = .horizontal
         top.spacing = 12
         top.alignment = .centerY
@@ -82,12 +93,16 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate {
         scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = true
         scrollView.autohidesScrollers = true
-        scrollView.borderType = .bezelBorder
+        scrollView.borderType = .noBorder
         scrollView.drawsBackground = true
         scrollView.backgroundColor = .underPageBackgroundColor
         scrollView.allowsMagnification = true
         scrollView.minMagnification = 0.01
         scrollView.maxMagnification = 8
+        scrollView.wantsLayer = true
+        scrollView.layer?.cornerRadius = 14
+        scrollView.layer?.masksToBounds = true
+        scrollView.setAccessibilityLabel("长截图原始图像，可滚动及缩放")
 
         let folder = NSButton(title: "保存位置…", target: self, action: #selector(chooseDirectoryClicked))
         let discard = NSButton(title: "丢弃", target: self, action: #selector(discardClicked))
@@ -96,17 +111,24 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate {
         save.keyEquivalentModifierMask = [.command]
         let done = NSButton(title: "完成", target: self, action: #selector(saveClicked))
         done.keyEquivalent = "\r"
+        for button in [folder, discard, save] { NativeUI.styleAction(button) }
+        NativeUI.styleAction(done, prominent: true)
+        folder.image = NSImage(systemSymbolName: "folder", accessibilityDescription: nil)
+        discard.image = NSImage(systemSymbolName: "trash", accessibilityDescription: nil)
+        save.image = NSImage(systemSymbolName: "square.and.arrow.down", accessibilityDescription: nil)
+        for button in [folder, discard, save] { button.imagePosition = .imageLeading }
+        discard.toolTip = "丢弃这张截图，不保存"
         actionButtons = [folder, discard, save, done]
         let actions = NSStackView(views: [folder, NSView(), discard, save, done])
         actions.orientation = .horizontal
         actions.spacing = 10
         actions.alignment = .centerY
         statusLabel.textColor = .secondaryLabelColor
-        statusLabel.font = .systemFont(ofSize: 11)
+        statusLabel.font = .systemFont(ofSize: 12)
 
         let stack = NSStackView()
         stack.orientation = .vertical
-        stack.spacing = 10
+        stack.spacing = 14
         stack.alignment = .leading
         stack.translatesAutoresizingMaskIntoConstraints = false
         root.addSubview(stack)
@@ -126,13 +148,13 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate {
             view.translatesAutoresizingMaskIntoConstraints = false
             view.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         }
-        top.heightAnchor.constraint(equalToConstant: 30).isActive = true
-        actions.heightAnchor.constraint(equalToConstant: 30).isActive = true
+        top.heightAnchor.constraint(equalToConstant: 46).isActive = true
+        actions.heightAnchor.constraint(equalToConstant: 36).isActive = true
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 16),
-            stack.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -16),
-            stack.topAnchor.constraint(equalTo: root.topAnchor, constant: 12),
-            stack.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -12),
+            stack.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 20),
+            stack.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -20),
+            stack.topAnchor.constraint(equalTo: root.safeAreaLayoutGuide.topAnchor, constant: 14),
+            stack.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -18),
             scrollView.heightAnchor.constraint(greaterThanOrEqualToConstant: 160)
         ])
     }

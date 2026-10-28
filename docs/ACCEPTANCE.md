@@ -7,7 +7,7 @@
 - 捕获边界分片：`swift test`，3 项通过（Retina/负坐标、跨屏拒绝、BGRA 复制与所有权）。
 - 拼接/会话分片：`swift test`，28 项通过。
 - 权限增量：8 项注入测试通过，覆盖不主动弹窗、已授权不重复申请、申请成功/拒绝、重启前仍阻止采集、外部允许/撤销、防重入及系统设置链接失败；权限分片时 `swift test` 共 36 项通过，累计位移修复后当前共 54 项通过。
-- 完整 App/XCTest：`./scripts/test.sh` 当前 67 项通过，0 失败（此前权限分片为 49 项）。包含真实 Vision 与 CoreText 的逐像素测试，不只检查图片高度；也包含原生 `NSWindow.performClose`、丢弃按钮和拒绝丢弃后的继续保存。
+- 完整 App/XCTest：`./scripts/test.sh` 当前 76 项通过，0 失败（玻璃界面改版前为 67 项）。包含真实 Vision 与 CoreText 的逐像素测试，不只检查图片高度；也包含原生 `NSWindow.performClose`、丢弃按钮和拒绝丢弃后的继续保存。
 - 设置权限区的原生离屏渲染已检查，浅色/深色下状态、申请/打开设置/检查按钮完整显示；这不代表系统授权弹窗已实测。
 - `./scripts/build.sh`：Release 构建成功，原生 arm64 可执行文件；应用包包含 MIT notice。
 - `codesign --verify --deep --strict`：签名完整性通过。2026-10-28 起改为本机现有 Apple Development 证书签名，不再以 ad-hoc 交付；没有公证或商店签名。
@@ -54,6 +54,17 @@
 - Debug/Release 均生成 `CFBundleIconName`、`CFBundleIconFile`、`AppIcon.icns` 和 `Assets.car`，已分别检查构建包；完整 Xcode XCTest 仍为 67 项通过、0 失败。默认构建脚本检查成品图标，测试脚本额外检查源资产。
 - 正式版已同证书构建并启动，签名身份与更新前一致，未重置录屏权限。旧版备份在 `build/Backups/20261028-101009-app-icon/Release.app`，旧 PID 51661 正常退出，新 PID 77430 完成启动。`NSWorkspace.icon(forFile:)` 返回新版图标，已渲染检查 `build/app-icon-system-preview.png`；不代表所有已打开的 Finder 窗口缓存都已人工核对。
 - 日志：`build/app-icon-red.log`、`build/app-icon-assets-tests.log`、`build/app-icon-xcode-tests.log`、`build/app-icon-debug-bundle-tests.log`、`build/app-icon-release-bundle-tests.log`、`build/app-icon-installed-release-build.log`、`build/app-icon-signing-regression.log`、`build/app-icon-normal-quit.log`、`build/app-icon-relaunch.log`。菜单栏单色模板与截图逻辑不变。
+
+## 原生 Liquid Glass 界面（2026-10-28）
+
+- 先增加五处界面的最小测试，旧实现五项均因缺少原生玻璃视图而失败；随后统一选区引导/尺寸、工具条、缩略图、预览、设置。macOS 26+ 使用 `NSGlassEffectView` 和原生玻璃按钮，macOS 27 支持原生交互材质。系统菜单、警告和文件面板保留原生实现。
+- 新增 9 项 UI 回归：旧版材质兼容、减少透明度通知切换且保留控件、选框拖动/调整/移动及 Return 入口、采集框鼠标穿透和完成/取消、缩略图保存失败后仍可打开、预览图像不被玻璃过滤、全部操作/快捷键、浅深色最小窗口布局、设置展示不申请权限。原有 13 项结果流程测试继续通过。
+- 首轮布局检查发现尺寸提示初始零宽度约束冲突，已设置合法初始尺寸，复跑没有约束冲突。系统合成检查又暴露预览新增符号后仅显示图标；最小回归实际产生 3 条失败，再显式设置 `imageLeading`，最终保持图标和操作文字同时显示。
+- 完整 XCTest 76 项通过、0 失败；正式版独立目录构建、图标和证书内容变更回归通过。Vision 测试过程中系统缓存曾输出 `MDB_MAP_FULL` 诊断，但没有测试失败；没有因此修改匹配阈值或清理系统缓存。
+- 已查看浅/深色的布局样张及真实系统合成样张。系统合成测试只包含测试进程自建窗口和生成背景，所有窗口按进程 ID 显式纳入；没有读取用户页面/聊天，也没有额外申请权限。减少透明度和旧版路径通过注入及通知测试验证，未改用户系统偏好；没有在真实 macOS 14/15/26 设备运行。
+- 界面测试和渲染不等于 Safari/TextEdit/微信真实滚动采集验收，也不等于完整 VoiceOver 人工走查。无自定义动画；原生控件的动效交给系统管理。
+- 更新前的正式版保存在 `build/Backups/20261028-124748-liquid-glass/Release.app`，实际被替换的安装包另存为同目录的 `InstalledRelease.app`。旧 PID 77430 正常退出并确认结束后才安装，新 PID 40731 从默认正式版路径完成启动；新旧证书身份要求逐字相同，没有强制退出或修改 TCC。
+- 日志：`build/glass-ui-red.log`、`build/glass-ui-regression.log`、`build/glass-ui-action-label-red.log`、`build/glass-ui-xcode-tests-final.log`、`build/glass-ui-render.log`、`build/glass-ui-composited.log`、`build/glass-ui-release-build.log`、`build/glass-ui-signing-regression.log`、`build/glass-ui-normal-quit.log`、`build/glass-ui-relaunch.log`。样张：`build/GlassUI/`，`*-composited.png` 为包含生成背景的系统合成结果；默认 PNG 仅是离屏布局，不应作为完整材质效果的证据。
 
 ## 尚未验证
 

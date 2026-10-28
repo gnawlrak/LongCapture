@@ -22,7 +22,7 @@ final class ResultThumbnail {
     }
 
     func show() {
-        let size = NSSize(width: 220, height: warning == nil ? 208 : 236)
+        let size = NSSize(width: 264, height: warning == nil ? 252 : 284)
         let screen = NSScreen.screens.first(where: { $0.frame == screenFrame })
         let placement = screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? screenFrame
         let frame = NSRect(x: placement.maxX - size.width - 20, y: placement.minY + 20,
@@ -55,7 +55,7 @@ final class ResultThumbnail {
         guard lifecycle.tick() else { return }
         timer?.invalidate()
         timer = nil
-        statusLabel?.stringValue = "正在保存…"
+        statusLabel?.stringValue = "正在保存原始像素 PNG…"
         onAutoSave()
     }
 
@@ -86,7 +86,7 @@ final class ResultThumbnail {
 }
 
 @MainActor
-private final class ThumbnailCard: NSVisualEffectView {
+private final class ThumbnailCard: NSView {
     let statusLabel = NSTextField(labelWithString: "5 秒后自动保存 · 点击预览")
     private let onClick: () -> Void
     private let onHover: (Bool) -> Void
@@ -97,44 +97,47 @@ private final class ThumbnailCard: NSVisualEffectView {
         self.onClick = onClick
         self.onHover = onHover
         super.init(frame: frame)
-        material = .popover
-        state = .active
-        wantsLayer = true
-        layer?.cornerRadius = 14
-        layer?.masksToBounds = true
+        let glass = NativeGlassView(cornerRadius: 24, legacyMaterial: .popover)
+        glass.frame = bounds
+        glass.autoresizingMask = [.width, .height]
+        addSubview(glass)
+        let content = glass.contentView
         setAccessibilityElement(true)
         setAccessibilityRole(.button)
         setAccessibilityLabel("长截图已完成，点击打开预览；不操作将自动保存")
 
         let preview = ThumbnailImageView(image: image)
         preview.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(preview)
+        content.addSubview(preview)
         let title = NSTextField(labelWithString: "长截图已完成")
         title.font = .systemFont(ofSize: 13, weight: .semibold)
-        statusLabel.font = .systemFont(ofSize: 11)
+        statusLabel.font = .systemFont(ofSize: 12)
         statusLabel.textColor = .secondaryLabelColor
-        let stack = NSStackView(views: [title, statusLabel])
+        statusLabel.lineBreakMode = .byTruncatingTail
+        let heading = NSStackView(views: [NativeUI.symbol("checkmark.circle", description: nil), title])
+        heading.spacing = 6
+        let stack = NSStackView(views: [heading, statusLabel])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 4
         if let warning {
             let label = NSTextField(wrappingLabelWithString: warning)
-            label.font = .systemFont(ofSize: 10)
+            label.font = .systemFont(ofSize: 11)
             label.textColor = .systemOrange
             label.maximumNumberOfLines = 2
             stack.addArrangedSubview(label)
         }
         stack.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(stack)
+        content.addSubview(stack)
         NSLayoutConstraint.activate([
-            preview.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
-            preview.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
-            preview.topAnchor.constraint(equalTo: topAnchor, constant: 10),
-            preview.heightAnchor.constraint(equalToConstant: 140),
-            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
-            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
-            stack.topAnchor.constraint(equalTo: preview.bottomAnchor, constant: 9),
-            stack.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor, constant: -9)
+            preview.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 12),
+            preview.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -12),
+            preview.topAnchor.constraint(equalTo: content.topAnchor, constant: 12),
+            preview.heightAnchor.constraint(equalToConstant: 164),
+            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16),
+            stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
+            stack.topAnchor.constraint(equalTo: preview.bottomAnchor, constant: 12),
+            stack.bottomAnchor.constraint(lessThanOrEqualTo: content.bottomAnchor, constant: -12)
         ])
     }
 
@@ -164,7 +167,7 @@ private final class ThumbnailImageView: NSView {
         self.image = image
         super.init(frame: .zero)
         wantsLayer = true
-        layer?.cornerRadius = 6
+        layer?.cornerRadius = 14
         layer?.masksToBounds = true
     }
 

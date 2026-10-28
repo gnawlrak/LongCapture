@@ -58,13 +58,71 @@ private final class SelectionWindow: NSWindow {
 }
 
 private final class SelectionView: NSView {
-    var selection: CGRect? { didSet { needsDisplay = true } }
+    var selection: CGRect? { didSet { updateSelectionPresentation(); needsDisplay = true } }
     var onBegin: (() -> Void)?
     var onCancel: (() -> Void)?
+    private let instructions = NativeGlassView(cornerRadius: 24)
+    private let dimensions = NativeGlassView(cornerRadius: 12, interactive: false)
+    private let titleLabel = NSTextField(labelWithString: "框选要拼接的滚动区域")
+    private let noteLabel = NSTextField(wrappingLabelWithString: "只框正文，避开固定标题、侧栏、输入框和动画。")
+    private let dimensionLabel = NSTextField(labelWithString: "")
+    private var beginButton: NSButton!
     private var dragStart: CGPoint?
     private var initialRect: CGRect = .zero
     private var dragMode: DragMode = .new
     private enum DragMode { case new, move, resize(Int) }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        titleLabel.font = .systemFont(ofSize: 14, weight: .semibold)
+        noteLabel.font = .systemFont(ofSize: 12)
+        noteLabel.textColor = .secondaryLabelColor
+        noteLabel.maximumNumberOfLines = 2
+        let labels = NSStackView(views: [titleLabel, noteLabel])
+        labels.orientation = .vertical
+        labels.alignment = .leading
+        labels.spacing = 5
+        labels.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let cancel = NSButton(title: "取消", target: self, action: #selector(cancelClicked))
+        NativeUI.styleAction(cancel)
+        cancel.keyEquivalent = "\u{1b}"
+        beginButton = NSButton(title: "开始截图", target: self, action: #selector(beginClicked))
+        NativeUI.styleAction(beginButton, prominent: true)
+        beginButton.keyEquivalent = "\r"
+        beginButton.isEnabled = false
+        let stack = NSStackView(views: [NativeUI.symbol("viewfinder"), labels, NSView(), cancel, beginButton])
+        stack.spacing = 14
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        instructions.contentView.addSubview(stack)
+        instructions.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(instructions)
+        let preferredWidth = instructions.widthAnchor.constraint(equalToConstant: 740)
+        preferredWidth.priority = .defaultHigh
+        NSLayoutConstraint.activate([
+            instructions.topAnchor.constraint(equalTo: topAnchor, constant: 28),
+            instructions.centerXAnchor.constraint(equalTo: centerXAnchor),
+            instructions.widthAnchor.constraint(lessThanOrEqualTo: widthAnchor, constant: -32),
+            preferredWidth,
+            stack.leadingAnchor.constraint(equalTo: instructions.contentView.leadingAnchor, constant: 20),
+            stack.trailingAnchor.constraint(equalTo: instructions.contentView.trailingAnchor, constant: -16),
+            stack.topAnchor.constraint(equalTo: instructions.contentView.topAnchor, constant: 16),
+            stack.bottomAnchor.constraint(equalTo: instructions.contentView.bottomAnchor, constant: -16)
+        ])
+        dimensionLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .medium)
+        dimensionLabel.translatesAutoresizingMaskIntoConstraints = false
+        dimensions.contentView.addSubview(dimensionLabel)
+        dimensions.frame = NSRect(x: 0, y: 0, width: 160, height: 28)
+        dimensions.isHidden = true
+        addSubview(dimensions)
+        NSLayoutConstraint.activate([
+            dimensionLabel.leadingAnchor.constraint(equalTo: dimensions.contentView.leadingAnchor, constant: 12),
+            dimensionLabel.trailingAnchor.constraint(equalTo: dimensions.contentView.trailingAnchor, constant: -12),
+            dimensionLabel.centerYAnchor.constraint(equalTo: dimensions.contentView.centerYAnchor)
+        ])
+        setAccessibilityLabel("拖动框选滚动区域，回车开始，Esc 取消")
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
     override var acceptsFirstResponder: Bool { true }
     override func resetCursorRects() { addCursorRect(bounds, cursor: .crosshair) }
@@ -110,6 +168,23 @@ private final class SelectionView: NSView {
         }
     }
 
+    @objc private func beginClicked() { onBegin?() }
+    @objc private func cancelClicked() { onCancel?() }
+
+    private func updateSelectionPresentation() {
+        let valid = selection.map { $0.width >= 24 && $0.height >= 24 } ?? false
+        beginButton.isEnabled = valid
+        titleLabel.stringValue = valid ? "调整范围，回车开始" : "框选要拼接的滚动区域"
+        noteLabel.stringValue = valid ? "拖动内部移动 · 拖动边缘调整 · Esc 取消" : "只框正文，避开固定标题、侧栏、输入框和动画。"
+        dimensions.isHidden = !valid
+        guard valid, let selection else { return }
+        let scale = window?.backingScaleFactor ?? 1
+        dimensionLabel.stringValue = "\(Int(selection.width * scale)) × \(Int(selection.height * scale)) px"
+        let width = dimensionLabel.intrinsicContentSize.width + 24
+        dimensions.frame = NSRect(x: min(max(8, selection.midX - width / 2), bounds.width - width - 8),
+                                  y: max(8, selection.minY - 38), width: width, height: 28)
+    }
+
     private func hitHandle(_ point: CGPoint, rect: CGRect) -> Int? {
         var mask = 0
         if abs(point.x - rect.minX) <= 8 { mask |= 1 }
@@ -123,7 +198,7 @@ private final class SelectionView: NSView {
         let dim = NSBezierPath(rect: bounds)
         if let selection { dim.appendRect(selection) }
         dim.windingRule = .evenOdd
-        NSColor.black.withAlphaComponent(0.40).setFill()
+        NSColor.black.withAlphaComponent(0.24).setFill()
         dim.fill()
         if let rect = selection, rect.width > 0, rect.height > 0 {
             NSColor.white.setStroke()
@@ -137,14 +212,5 @@ private final class SelectionView: NSView {
                 }
             }
         }
-        let title = selection == nil ? "拖动框选滚动区域" : "拖动内部移动 · 拖动边缘调整 · 回车开始 · Esc 取消"
-        let note = "只框正文，避开固定标题栏、侧栏、输入框和持续动画。仅支持单屏纵向滚动。"
-        let center = NSMutableParagraphStyle(); center.alignment = .center
-        let attributes: [NSAttributedString.Key: Any] = [.foregroundColor: NSColor.white,
-            .font: NSFont.systemFont(ofSize: 15, weight: .semibold), .paragraphStyle: center]
-        let box = CGRect(x: 20, y: bounds.height - 62, width: bounds.width - 40, height: 26)
-        (title as NSString).draw(in: box, withAttributes: attributes)
-        var smaller = attributes; smaller[.font] = NSFont.systemFont(ofSize: 12)
-        (note as NSString).draw(in: box.offsetBy(dx: 0, dy: -26), withAttributes: smaller)
     }
 }
