@@ -38,6 +38,8 @@
 
 ## Build
 
+The root `LICENSE` covers LongCapture under MIT. The App resources include both that license and `THIRD_PARTY_NOTICES.md`, preserving ScrollSnap's separate upstream copyright and MIT notice in source and binary distributions.
+
 The shared Xcode scheme contains an App target (macOS 14) and a hosted XCTest target. Building the glass implementation requires Xcode 27 / macOS 27 SDK; availability guards preserve the macOS 14 runtime deployment target. Tests skip production status-item/hotkey initialization. Debug uses the current architecture and the `.debug` bundle ID; `scripts/build.sh` produces an optimized, Apple Development-signed local app using the configured team. Test-only code and entitlements do not enter the Release app. `scripts/test-signing.sh` mutates and re-signs a disposable, never-launched copy to verify that the designated requirement stays stable across content changes; this does not prove an actual TCC grant.
 
 `scripts/render-ui.sh` compiles a separate fixture executable from the real UI sources and a generated document. Its default snapshots test offscreen layout, not compositor effects. The optional compositor mode preflights existing access without prompting and uses an explicit two-window ScreenCaptureKit inclusion filter, checking both windows' owner PID. Only the generated backdrop and the fixture window are captured. Selection/toolbar fixture instances temporarily allow sharing for this inspection and restore it afterward; production instances remain excluded and are checked by XCTest. The fixture does not enter the application bundle.

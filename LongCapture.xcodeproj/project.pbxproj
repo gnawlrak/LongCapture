@@ -1,5 +1,7 @@
 // !$*UTF8*$!
 { archiveVersion = 1; classes = {}; objectVersion = 77; objects = {
+		F028_r = {isa = PBXFileReference; lastKnownFileType = text; path = LICENSE; sourceTree = SOURCE_ROOT; };
+		F028_s = {isa = PBXBuildFile; fileRef = F028_r; };
 		F026_r = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "LongCapture/Source/App/LoginItemSettings.swift"; sourceTree = SOURCE_ROOT; };
 		F026_s = {isa = PBXBuildFile; fileRef = F026_r; };
 		F027_r = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "LongCapture/Tests/LoginItemSettingsTests.swift"; sourceTree = SOURCE_ROOT; };
@@ -117,7 +119,7 @@
 			F014_s,
 			F015_s,
 		); runOnlyForDeploymentPostprocessing = 0; };
-		LongCaptureResources = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (F019_s, F023_s,); runOnlyForDeploymentPostprocessing = 0; };
+		LongCaptureResources = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (F019_s, F023_s, F028_s,); runOnlyForDeploymentPostprocessing = 0; };
 		LongCaptureConfig = {isa = XCBuildConfiguration; buildSettings = {ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon; CLANG_ENABLE_MODULES = YES; CODE_SIGN_IDENTITY = "Apple Development"; CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 1; DEVELOPMENT_TEAM = B7H8RAVVJ7; ENABLE_TESTABILITY = YES; ENABLE_HARDENED_RUNTIME = YES; GENERATE_INFOPLIST_FILE = YES; INFOPLIST_KEY_CFBundleDisplayName = "长截图（调试）"; INFOPLIST_KEY_LSUIElement = YES; MACOSX_DEPLOYMENT_TARGET = 14.0; MARKETING_VERSION = 1.0; PRODUCT_BUNDLE_IDENTIFIER = com.gnawlrak.LongCapture.debug; PRODUCT_NAME = LongCapture; SWIFT_VERSION = 5.0; }; name = Debug; };
 		LongCaptureConfigRelease = {isa = XCBuildConfiguration; buildSettings = {ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon; CLANG_ENABLE_MODULES = YES; CODE_SIGN_IDENTITY = "Apple Development"; CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO; CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 1; DEVELOPMENT_TEAM = B7H8RAVVJ7; ENABLE_HARDENED_RUNTIME = YES; GENERATE_INFOPLIST_FILE = YES; INFOPLIST_KEY_CFBundleDisplayName = "长截图"; INFOPLIST_KEY_LSUIElement = YES; MACOSX_DEPLOYMENT_TARGET = 14.0; MARKETING_VERSION = 1.0; PRODUCT_BUNDLE_IDENTIFIER = com.gnawlrak.LongCapture; PRODUCT_NAME = LongCapture; SWIFT_VERSION = 5.0; }; name = Release; };
 		LongCaptureTestsConfig = {isa = XCBuildConfiguration; buildSettings = {BUNDLE_LOADER = "$(TEST_HOST)"; CODE_SIGN_IDENTITY = "Apple Development"; CODE_SIGN_STYLE = Automatic; DEVELOPMENT_TEAM = B7H8RAVVJ7; GENERATE_INFOPLIST_FILE = YES; MACOSX_DEPLOYMENT_TARGET = 14.0; PRODUCT_BUNDLE_IDENTIFIER = com.gnawlrak.LongCaptureTests; PRODUCT_NAME = LongCaptureTests; SWIFT_MODULE_NAME = LongCaptureTests; SWIFT_VERSION = 5.0; TEST_HOST = "$(BUILT_PRODUCTS_DIR)/LongCapture.app/Contents/MacOS/LongCapture"; }; name = Debug; };
@@ -130,5 +132,5 @@
 		LongCaptureProjectConfigRelease = {isa = XCBuildConfiguration; buildSettings = {ALWAYS_SEARCH_USER_PATHS = NO; CLANG_ENABLE_MODULES = YES; GCC_C_LANGUAGE_STANDARD = gnu17; MACOSX_DEPLOYMENT_TARGET = 14.0; SDKROOT = macosx; SWIFT_VERSION = 5.0; }; name = Release; };
 		ProductsGroup = {isa = PBXGroup; children = (LongCapture.app, LongCaptureTests.xctest,); name = Products; sourceTree = "<group>"; };
 		LongCaptureDependency = {isa = PBXTargetDependency; target = LongCaptureTarget; };
-		MainGroup = {isa = PBXGroup; children = (LongCapture, LongCaptureTests, ProductsGroup, F019_r,); sourceTree = "<group>"; };
+		MainGroup = {isa = PBXGroup; children = (LongCapture, LongCaptureTests, ProductsGroup, F019_r, F028_r,); sourceTree = "<group>"; };
 	}; rootObject = LongCaptureProject; }

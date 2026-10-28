@@ -1,5 +1,16 @@
 # Development Log
 
+## 2026-10-28 - Slice 13: MIT license and public repository preparation
+
+Contract: publish LongCapture source under MIT with a newcomer-facing README, preserve upstream notices, and include both licenses in future App bundles. Do not alter capture/matching behavior, installed-app identity, TCC records or login-item state.
+
+- Preflight confirmed the root project license was missing. Added standard MIT text, copyright 2026 gnawlrak; retained ScrollSnap's original MIT notice and added the project license to the Xcode resources phase.
+- Rewrote README around features, quick use, explicit developer signing requirements, unnotarized distribution, privacy, recovery behavior, limits, tests and contribution guidance. Kept deployment targets separate from tested OS/hardware support. Recorded the author's reported everyday use in Codex/other apps without inventing missing Safari/TextEdit/WeChat acceptance results.
+- README local links, MIT content, resource references, project plist syntax and whitespace checks pass. An isolated optimized App in `build/OpenSourceRelease/` builds successfully; explicit byte comparisons confirm both bundled licenses match their source files. That new bundle passes strict signing and icon checks. The running Release App was not replaced or relaunched.
+- Full Xcode XCTest rerun passes 99/99, zero failures; the earlier open-source review also reran 62/62 core tests. Existing Vision `MDB_MAP_FULL` cache diagnostics remain visible, with no failed assertions or cache modifications. Evidence: `build/open-source-release-build.log`, `build/open-source-full-tests.log` and the Xcode result bundle.
+- Before publishing, scanned all 135 existing historical file blobs for common private-key/token patterns and historical paths for build products, logs, certificates and user HEIC images: no matches. This bounded scan is not a formal security audit. Ignored local build products and private test material are not part of the upload.
+- Created the public `gnawlrak/LongCapture` repository through GitHub MCP at the author's explicit request. This slice publishes source/history, not a notarized App or a versioned binary release; no release tag or downloadable installer is created.
+
 ## 2026-10-27 - Slice 1: capture boundary
 
 Contract: a single-display AppKit selection becomes a display-local top-left, Retina-pixel-aligned ScreenCaptureKit crop. Complete BGRA frames must own their bytes after the pixel buffer is unlocked. No Accessibility, Input Monitoring, microphone or network request is made.
