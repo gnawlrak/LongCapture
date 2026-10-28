@@ -404,6 +404,7 @@ struct OverlapValidator {
             current.pixels.withUnsafeBytes { rightRaw in
                 let left = leftRaw.bindMemory(to: UInt8.self), right = rightRaw.bindMemory(to: UInt8.self)
                 let rowBytes = current.bytesPerRow
+                let patchOffsets = [0, 4, rowBytes]
                 var totals = [Double](repeating: 0, count: 3), counts = [Int](repeating: 0, count: 3)
                 var bad = 0, edges = 0, verticalEdges = 0, count = 0
                 let nx = min(128, current.width - 1), ny = min(96, rows.count)
@@ -412,13 +413,22 @@ struct OverlapValidator {
                     for ix in 0..<nx {
                         let x = ix * (current.width - 1) / nx
                         let p = (y + shift) * rowBytes + x * 4, q = y * rowBytes + x * 4
+                        let neighborX = y * rowBytes + min(x + 2, current.width - 1) * 4
+                        let neighborY = min(y + 2, current.height - 1) * rowBytes + x * 4
                         var difference = 0, worst = 0, horizontal = 0, vertical = 0
                         for c in 0..<3 {
                             let value = Int(right[q + c])
-                            let delta = abs(Int(left[p + c]) - value)
-                            difference += delta; worst = max(worst, delta)
-                            horizontal += abs(Int(right[q + 4 + c]) - value)
-                            vertical += abs(Int(right[q + rowBytes + c]) - value)
+                            var channelDifference = 0
+                            for offset in patchOffsets {
+                                let delta = abs(Int(left[p + offset + c]) - Int(right[q + offset + c]))
+                                channelDifference = max(channelDifference, delta)
+                            }
+                            difference += channelDifference; worst = max(worst, channelDifference)
+                            // Adjacent pairs can hide all edges from a regularly spaced sampling grid.
+                            horizontal += max(abs(Int(right[q + 4 + c]) - value),
+                                              abs(Int(right[neighborX + c]) - value))
+                            vertical += max(abs(Int(right[q + rowBytes + c]) - value),
+                                            abs(Int(right[neighborY + c]) - value))
                         }
                         let lane = min(2, x * 3 / current.width)
                         totals[lane] += Double(difference) / 765

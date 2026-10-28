@@ -6,8 +6,8 @@
 
 - 捕获边界分片：`swift test`，3 项通过（Retina/负坐标、跨屏拒绝、BGRA 复制与所有权）。
 - 拼接/会话分片：`swift test`，28 项通过。
-- 权限增量：8 项注入测试通过，覆盖不主动弹窗、已授权不重复申请、申请成功/拒绝、重启前仍阻止采集、外部允许/撤销、防重入及系统设置链接失败；权限分片时 `swift test` 共 36 项通过，接缝修复后当前共 47 项通过。
-- 完整 App/XCTest：`./scripts/test.sh` 当前 60 项通过，0 失败（此前权限分片为 49 项）。包含真实 Vision 与 CoreText 的逐像素测试，不只检查图片高度；也包含原生 `NSWindow.performClose`、丢弃按钮和拒绝丢弃后的继续保存。
+- 权限增量：8 项注入测试通过，覆盖不主动弹窗、已授权不重复申请、申请成功/拒绝、重启前仍阻止采集、外部允许/撤销、防重入及系统设置链接失败；权限分片时 `swift test` 共 36 项通过，累计位移修复后当前共 54 项通过。
+- 完整 App/XCTest：`./scripts/test.sh` 当前 67 项通过，0 失败（此前权限分片为 49 项）。包含真实 Vision 与 CoreText 的逐像素测试，不只检查图片高度；也包含原生 `NSWindow.performClose`、丢弃按钮和拒绝丢弃后的继续保存。
 - 设置权限区的原生离屏渲染已检查，浅色/深色下状态、申请/打开设置/检查按钮完整显示；这不代表系统授权弹窗已实测。
 - `./scripts/build.sh`：Release 构建成功，原生 arm64 可执行文件；应用包包含 MIT notice。
 - `codesign --verify --deep --strict`：签名完整性通过。2026-10-28 起改为本机现有 Apple Development 证书签名，不再以 ad-hoc 交付；没有公证或商店签名。
@@ -35,6 +35,17 @@
 - 日志：`build/edge-seam-red.log`、`build/edge-seam-swift-tests.log`、`build/edge-seam-release-tests.log`、`build/edge-seam-xcode-tests.log`、`build/edge-seam-pixel-probe.log`。素材均为本地生成；用户原图不进入仓库。
 - 正式版构建和签名回归通过；修复前 App 已备份到 `build/Backups/20261028-084143-edge-seams/Release.app`。向旧进程发送正常退出请求后，首次等待未观察到退出，随后独立系统进程检查确认它已结束，才替换 App；没有强制结束进程。新版已启动，前后证书身份要求逐字一致，没有修改系统授权。构建/签名/进程日志分别为 `build/edge-seam-release-build.log`、`build/edge-seam-signing.log`、`build/edge-seam-relaunch.log`。
 - 最后仍被遮住的外边缘不会被凭空修复；任意位置的固定控件、动画和过小的正文重叠仍不保证可拼。此次未重新采集用户的 Codex 对话，也未把合成帧结果记作 Safari/TextEdit/微信实测通过。
+
+## 匹配暂停与累计位置复查（2026-10-28）
+
+- 用户明确反馈为「匹配暂停，请往回滚动恢复」，不能把它解释成 64MP/50K 上限。新增长流对照在修复前就通过：注入位移每方向 201 帧、输出 13,280px；真实 Vision 文字和边缘遮罩每方向 61 帧、输出 6,300px。因此没有复现单纯累计高度导致的截止点。
+- 另外两类最小回归实际失败：连续 1/16px 移动被逐帧取整为 0，却不断更换可靠参照，丢失累计位置；规则纹理采样又可能只落到两像素成对图案的同一半，误判无纹理。真实 Vision 与注入估计均能触发后续暂停，首轮共 26 条失败断言。
+- 修复后，取整为 0 的有效帧保留原参照；纹理查看 1/2px 邻居，重叠检查相邻像素。额外负例确认 65px 实际移动不能被误认成 64px，且邻居正确不能平均稀释原采样点的错误。误差阈值未放宽。
+- 最终核心 Debug/Release 各 54 项、完整 Xcode 67 项通过，均为 0 失败。新增的上下方向输出逐像素等于参考图，空白/周期图案/动态区域/无重叠仍被拒绝；没有通过关闭校验使测试变绿。
+- 日志在 `build/matching-recovery-*.log`、`build/matching-patch-red.log` 和 `build/matching-patch-dilution-red.log`。没有记录用户屏幕帧或对话内容，也未修改系统授权。
+- 尚未取得用户现场的原始采样序列，不能宣称已证明那一固定页面位置的唯一根因；原页面和真实 ScreenCaptureKit 长流复测仍未完成。
+- 受限会话阶段曾阻止进程查询、签名私钥访问和 Git 写入，失败日志保留。用户恢复权限后，正式版独立构建、严格签名校验和签名变更回归均通过，新旧证书身份要求逐字相同，没有临时签名或修改 TCC。
+- 已正常退出旧 PID 49536，再通过已验证的副本和目录重命名替换正式版。新版从 `build/Release/LongCapture.app` 启动，PID 48090 已完成启动；恢复权限后优化核心复跑仍为 54 项通过。旧版备份在 `build/Backups/20261028-092932-matching-recovery/Release.app` 和该目录的 `InstalledRelease.app`。交付日志在 `build/matching-recovery-release-build-resumed.log`、`build/matching-recovery-signing-regression.log`、`build/matching-recovery-identity-comparison.log`、`build/matching-recovery-normal-quit.log`、`build/matching-recovery-install-relaunch.log`；这不代替原页面现场复测。
 
 ## 尚未验证
 
@@ -68,3 +79,4 @@ open -a TextEdit build/Fixtures/LongCapture-test.txt
 8. 有设备时测不同缩放显示器；框选不得跨屏；捕获中改分辨率、锁屏或断流，确认安全保留已确认部分并提示原因。
 9. 仅在用户明确确认后，对指定微信非敏感测试会话重复向上、回看、恢复和导出检查；不得以自动化测试代替该项。
 10. 对有底部跳转箭头/渐变的非敏感测试页面，慢滚后再回看并恢复增长，检查箭头与遮罩不在图像内部重复。向上采集时检查顶部边缘同类现象；末端仍被控件盖住的内容不应被伪造补出。
+11. 连续滚动至少 15 个视口，夹杂接近静止的慢滚、暂停和反向回看，再恢复原方向。对原来固定暂停的页面位置复测；若仍暂停，记录工具条的已确认高度及悬停显示的具体原因，不把通用恢复文案当成长度上限。

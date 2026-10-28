@@ -57,6 +57,26 @@ struct TestCanvas {
                           pixels: pixels.subdata(in: (y * width * 4)..<((y + frameHeight) * width * 4)))
     }
 
+    /// Synthetic fractional raster motion, including small changes that round to zero pixels.
+    func interpolatedFrame(at position: Double, height frameHeight: Int) -> CGImage {
+        let row = Int(position.rounded(.down)), fraction = position - Double(row)
+        if fraction == 0 { return frame(at: row, height: frameHeight) }
+        precondition(row >= 0 && row + frameHeight < height)
+        let rowBytes = width * 4, byteCount = rowBytes * frameHeight
+        var output = Data(count: byteCount)
+        pixels.withUnsafeBytes { source in
+            output.withUnsafeMutableBytes { destination in
+                let input = source.bindMemory(to: UInt8.self), result = destination.bindMemory(to: UInt8.self)
+                for p in 0..<byteCount {
+                    let start = row * rowBytes + p
+                    result[p] = UInt8((Double(input[start]) * (1 - fraction) +
+                                      Double(input[start + rowBytes]) * fraction).rounded())
+                }
+            }
+        }
+        return Self.image(width: width, height: frameHeight, pixels: output)
+    }
+
     static func image(width: Int, height: Int, pixels: Data) -> CGImage {
         CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32,
                 bytesPerRow: width * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,

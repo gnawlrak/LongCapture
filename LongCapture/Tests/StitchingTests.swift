@@ -11,6 +11,22 @@ private final class ScriptedEstimator: OffsetEstimating {
     }
 }
 
+private final class KnownFramePositionEstimator: OffsetEstimating {
+    private var positions: [Data: Double] = [:]
+
+    init(frames: [CGImage], positions: [Double]) throws {
+        for (frame, position) in zip(frames, positions) { self.positions[try PixelImage(frame).pixels] = position }
+    }
+
+    func estimate(previous: PixelImage, current: PixelImage) -> MoveEstimate {
+        guard let old = positions[previous.pixels], let new = positions[current.pixels] else {
+            XCTFail("Estimator received an unknown test frame")
+            return MoveEstimate(shift: nil)
+        }
+        return MoveEstimate(shift: Int((new - old).rounded()))
+    }
+}
+
 final class StitchingTests: XCTestCase {
     func testDownwardOutputHasExactPixelsNotOnlyHeight() throws {
         let canvas = TestCanvas()
@@ -354,5 +370,113 @@ final class StitchingTests: XCTestCase {
         let result = try sut.finish()
         XCTAssertFalse(result.incomplete)
         try assertPixelsEqual(result.image, withViewportOverlay(canvas.frame(at: 100, height: 1_111), edge: .bottom))
+    }
+
+    func testZeroRoundedMovesAccumulateWithoutLosingTheReliableOrigin() throws {
+        try assertFractionalScrollCanResume { try KnownFramePositionEstimator(frames: $0, positions: $1) }
+    }
+
+    func testRealVisionFractionalScrollDoesNotPermanentlyBlockLaterGrowth() throws {
+        try assertFractionalScrollCanResume { _, _ in VisionOffsetEstimator() }
+    }
+
+    private func assertFractionalScrollCanResume(
+        estimator: ([CGImage], [Double]) throws -> any OffsetEstimating
+    ) throws {
+        let canvas = TestCanvas(height: 2_000)
+        for sign in [1.0, -1.0] {
+            let base = 500.0, anchor = base + sign * 10
+            let fractions = (1...16).map { anchor + sign * Double($0) / 16 }
+            let positions = [base, anchor] + fractions + [anchor + sign * 21, anchor + sign * 41]
+            let frames = positions.map { canvas.interpolatedFrame(at: $0, height: 300) }
+            let sut = StitchingController(estimator: try estimator(frames, positions))
+            XCTAssertEqual(sut.accept(frames[0]).action, .grew)
+            XCTAssertEqual(sut.accept(frames[1]).action, .grew)
+            for frame in frames.dropFirst(2).dropLast(2) { _ = sut.accept(frame) }
+            for frame in frames.suffix(2) {
+                let update = sut.accept(frame)
+                XCTAssertEqual(update.action, .grew, "Rounding must not leave a permanent offset: \(update.message ?? "")")
+            }
+            let result = try sut.finish()
+            XCTAssertFalse(result.incomplete)
+            let start = Int(positions.min()!), height = Int(positions.max()!) - start + 300
+            try assertPixelsEqual(result.image, canvas.frame(at: start, height: height))
+        }
+    }
+
+    func testTextureValidationCannotAliasAPairedPixelPattern() throws {
+        let canvas = TestCanvas(height: 1_600)
+        let estimators: [any OffsetEstimating] = [ScriptedEstimator([64]), VisionOffsetEstimator()]
+        for estimator in estimators {
+            let sut = StitchingController(estimator: estimator)
+            _ = sut.accept(canvas.frame(at: 0, height: 960))
+            let update = sut.accept(canvas.frame(at: 64, height: 960))
+            XCTAssertEqual(update.action, .grew, update.message ?? "No reason")
+            try assertPixelsEqual(sut.finish().image, canvas.frame(at: 0, height: 1_024))
+        }
+    }
+
+    func testOverlapValidationCannotHideAOnePixelErrorInPairedRows() throws {
+        let canvas = TestCanvas(height: 1_600)
+        let previous = try PixelImage(canvas.frame(at: 0, height: 960))
+        let current = try PixelImage(canvas.frame(at: 65, height: 960))
+        let validator = OverlapValidator()
+        XCTAssertTrue(validator.score(previous, current, shift: 65).isReliable)
+        XCTAssertFalse(validator.score(previous, current, shift: 64).isReliable,
+                       "An even sampling grid must not hide the wrong half of each paired row")
+    }
+
+    func testOverlapPatchesCannotDiluteAnErrorAtEverySample() throws {
+        let canvas = TestCanvas(width: 1_280, height: 480)
+        let previous = try PixelImage(canvas.frame(at: 0, height: 480))
+        var changed = previous.pixels
+        changed.withUnsafeMutableBytes { raw in
+            let bytes = raw.bindMemory(to: UInt8.self)
+            for ix in 0..<128 {
+                let x = ix * (canvas.width - 1) / 128
+                let p = (200 * canvas.width + x) * 4
+                for c in 0..<3 {
+                    bytes[p + c] = bytes[p + c] <= 235 ? bytes[p + c] + 20 : bytes[p + c] - 20
+                }
+            }
+        }
+        let current = try PixelImage(TestCanvas.image(width: canvas.width, height: 480, pixels: changed))
+        XCTAssertFalse(OverlapValidator().score(previous, current, shift: 0, rows: 200..<201).isReliable,
+                       "Correct adjacent pixels must not average away a bad original sample")
+    }
+
+    func testManyViewportsDoNotAcquireAnAccumulatedLengthLimit() throws {
+        let canvas = TestCanvas(height: 14_000)
+        for sign in [1, -1] {
+            let positions = (0...200).map { sign == 1 ? 120 + $0 * 64 : 13_000 - $0 * 64 }
+            let sut = StitchingController(estimator: ScriptedEstimator(Array(repeating: sign * 64, count: 200)))
+            for y in positions {
+                let update = sut.accept(canvas.frame(at: y, height: 480))
+                guard update.action == .grew else {
+                    XCTFail("Unexpected stop after \(update.height) pixels: \(update.message ?? "")")
+                    return
+                }
+            }
+            let start = positions.min()!, height = positions.max()! - start + 480
+            try assertPixelsEqual(sut.finish().image, canvas.frame(at: start, height: height))
+        }
+    }
+
+    func testRealVisionContinuesAcrossManyTextViewports() throws {
+        let canvas = TextTestCanvas(height: 8_000)
+        for sign in [1, -1] {
+            let positions = (0...60).map { sign == 1 ? 120 + $0 * 97 : 6_500 - $0 * 97 }
+            let sut = StitchingController()
+            for y in positions {
+                let update = sut.accept(try withViewportOverlay(canvas.frame(at: y, height: 480), edge: sign == 1 ? .bottom : .top))
+                guard update.action == .grew else {
+                    XCTFail("Unexpected stop at source row \(y), confirmed height \(update.height): \(update.message ?? "")")
+                    return
+                }
+            }
+            let start = positions.min()!, height = positions.max()! - start + 480
+            let expected = try withViewportOverlay(canvas.frame(at: start, height: height), edge: sign == 1 ? .bottom : .top)
+            try assertPixelsEqual(sut.finish().image, expected)
+        }
     }
 }

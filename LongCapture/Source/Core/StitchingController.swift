@@ -43,6 +43,11 @@ final class StitchingController {
             guard OverlapValidator().score(previous, frame, shift: shift).isReliable else {
                 return recover("无法确认正文重叠，已暂停拼接。请往回滚动恢复。")
             }
+            // Keep the integer-coordinate anchor until subpixel motion accumulates into a real move.
+            if shift == 0 {
+                recoveryMessage = nil
+                return update(.stayed)
+            }
             let action = state?.accept(frame, shift: shift) ?? .rejected
             if action == .needsRecovery || action == .rejected { return recover("无法确认画面重叠，请往回滚动恢复。") }
             lastReliable = state?.atLimit == true ? nil : frame
