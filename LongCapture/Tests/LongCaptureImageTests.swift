@@ -95,7 +95,7 @@ struct TestCanvas {
 
 struct TextTestCanvas {
     let image: CGImage
-    init(width: Int = 640, height: Int = 1_600) {
+    init(width: Int = 640, height: Int = 1_600, lineText: ((Int) -> String)? = nil) {
         var pixels = Data(count: width * height * 4)
         pixels.withUnsafeMutableBytes { raw in
             let context = CGContext(data: raw.baseAddress, width: width, height: height,
@@ -108,7 +108,7 @@ struct TextTestCanvas {
             let font = CTFontCreateWithName("Menlo" as CFString, 14, nil)
             for row in 0..<(height / 24) {
                 let number = UInt32(truncatingIfNeeded: row &* 668_265_263)
-                let text = String(format: "%03d Document line %08X : capture text, row %d", row, number, row)
+                let text = lineText?(row) ?? String(format: "%03d Document line %08X : capture text, row %d", row, number, row)
                 let line = CTLineCreateWithAttributedString(NSAttributedString(string: text,
                     attributes: [NSAttributedString.Key(kCTFontAttributeName as String): font,
                                  NSAttributedString.Key(kCTForegroundColorAttributeName as String): CGColor(gray: 0.1, alpha: 1)]))

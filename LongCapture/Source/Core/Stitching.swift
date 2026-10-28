@@ -266,12 +266,13 @@ struct VisionOffsetEstimator: OffsetEstimating {
                 let rect = CGRect(x: lane * laneWidth, y: 0, width: laneWidth, height: previous.height)
                 guard let reference = old.cropping(to: rect), let target = new.cropping(to: rect) else { continue }
                 let request = VNTranslationalImageRegistrationRequest(targetedCGImage: target)
-                try VNImageRequestHandler(cgImage: reference, options: [:]).perform([request])
+                do { try VNImageRequestHandler(cgImage: reference, options: [:]).perform([request]) }
+                catch { continue }
                 guard let transform = request.results?.first?.alignmentTransform,
                       transform.tx.isFinite, transform.ty.isFinite, abs(transform.tx) <= 1.5 else { continue }
                 candidates.append(Double(-transform.ty))
             }
-            guard candidates.count == 3 else { return unreliable() }
+            // A feature-poor or misregistered lane must not veto independently verifiable pixel evidence.
             let maximumShift = Int(Double(previous.height) * maximumShiftFraction)
             // Repeated text can give two lanes the same wrong alias. Validate every proposal on pixels.
             let possibilities = Set(candidates.flatMap { candidate -> [Int] in
@@ -279,30 +280,52 @@ struct VisionOffsetEstimator: OffsetEstimating {
                 let nominal = Int(candidate.rounded())
                 return (nominal - 2 ... nominal + 2).filter { abs($0) <= maximumShift }
             }).sorted()
-            let samples = textureSamples(in: current)
-            guard samples.count >= 24 else { return unreliable() }
+            let texture = textureSamples(in: current)
+            guard texture.count >= 24 else { return unreliable() }
+            let samples = texture.count <= 512 ? texture :
+                (0..<512).map { texture[$0 * texture.count / 512] }
             let proposed = Set(possibilities)
             let search = possibilities + (-maximumShift...maximumShift).filter { !proposed.contains($0) }
-            typealias Match = (shift: Int, mean: Double, badFraction: Double)
+            typealias Match = (shift: Int, mean: Double, badFraction: Double, maximumError: Int)
             var matches: [Match] = []
             var best: Match?
             // Pixel search also tests offsets Vision missed; it cannot bypass texture or ambiguity gates.
             for shift in search where validator.contentRows(height: current.height, shift: shift) != nil {
                 let cutoff = min(0.12, max(0.028, 0.020 + (best?.mean ?? 0.05) * 2))
                 let score = sampledError(previous, current, shift: shift, points: samples, cutoff: cutoff)
-                let match = (shift: shift, mean: score.mean, badFraction: score.badFraction)
+                let match = (shift: shift, mean: score.mean, badFraction: score.badFraction, maximumError: score.maximumError)
                 matches.append(match)
                 if match.mean < (best?.mean ?? .infinity) { best = match }
             }
-            guard let best, best.mean <= 0.028, best.badFraction <= 0.12,
-                  validator.score(previous, current, shift: best.shift).isReliable else { return unreliable() }
-            // Repeated list rows can align perfectly at several offsets. Never choose one arbitrarily.
+            guard var best, best.mean <= 0.028, best.badFraction <= 0.12 else { return unreliable() }
             let ambiguityThreshold = 0.020 + best.mean * 2
-            for match in matches where abs(match.shift - best.shift) > 2 {
-                if match.mean <= ambiguityThreshold, match.badFraction < 0.16 {
-                    return MoveEstimate(shift: nil, message: "画面有重复图案，无法确认位移；请往回滚动恢复或更换选区。")
+            let alternatives = matches.filter { $0.mean <= ambiguityThreshold && $0.badFraction < 0.16 }
+            if alternatives.contains(where: { abs($0.shift - best.shift) > 2 }) {
+                // Sparse numbering can disappear from the fast sample. Re-rank aliases on a denser edge grid.
+                let detailSamples = textureSamples(in: current, dense: true)
+                var refined: [Match] = []
+                var exactShift: Int?
+                for match in alternatives {
+                    let score = sampledError(previous, current, shift: match.shift, points: detailSamples, cutoff: 0.12)
+                    if score.mean == 0 {
+                        if let exactShift, abs(exactShift - match.shift) > 2 { return ambiguous() }
+                        exactShift = match.shift
+                    }
+                    refined.append((match.shift, score.mean, score.badFraction, score.maximumError))
+                }
+                guard let winner = refined.min(by: { $0.mean < $1.mean }) else { return unreliable() }
+                best = winner
+                for match in refined where abs(match.shift - best.shift) > 2 &&
+                    match.mean <= 0.020 + best.mean * 2 && match.badFraction < 0.16 {
+                    guard validator.score(previous, current, shift: match.shift).isReliable else { continue }
+                    if !distinguishes(previous, current, best: best.shift, alternative: match.shift,
+                                      quantizationLimited: best.maximumError <= 1, points: detailSamples) {
+                        return ambiguous()
+                    }
                 }
             }
+            guard best.mean <= 0.028, best.badFraction <= 0.12,
+                  validator.score(previous, current, shift: best.shift).isReliable else { return unreliable() }
             return MoveEstimate(shift: best.shift)
         } catch { return unreliable() }
     }
@@ -311,15 +334,24 @@ struct VisionOffsetEstimator: OffsetEstimating {
         MoveEstimate(shift: nil, message: "匹配不可靠，已暂停拼接。请缓慢往回滚动，回到最后确认的位置。")
     }
 
+    private func ambiguous() -> MoveEstimate {
+        MoveEstimate(shift: nil, message: "画面有重复图案，无法确认位移；请往回滚动恢复或更换选区。")
+    }
+
     private struct SamplePoint { let x: Int; let y: Int }
 
-    private func textureSamples(in image: PixelImage) -> [SamplePoint] {
-        let points = image.pixels.withUnsafeBytes { raw -> [SamplePoint] in
+    private func textureSamples(in image: PixelImage, dense: Bool = false, alternatePhase: Bool = false) -> [SamplePoint] {
+        let xStep = max(1, image.width / (dense ? 256 : 96))
+        let yStep = max(1, image.height / (dense ? 256 : 128))
+        let xPhase = alternatePhase && xStep > 1 ? xStep / 2 : 0
+        let yPhase = alternatePhase && xStep == 1 && yStep > 1 ? yStep / 2 : 0
+        if alternatePhase, xPhase == 0, yPhase == 0 { return [] }
+        return image.pixels.withUnsafeBytes { raw -> [SamplePoint] in
             let bytes = raw.bindMemory(to: UInt8.self)
             var result: [SamplePoint] = []
             let margin = image.height / 6
-            for y in stride(from: margin, to: image.height - margin - 2, by: max(1, image.height / 128)) {
-                for x in stride(from: 0, to: image.width - 2, by: max(1, image.width / 96)) {
+            for y in stride(from: margin + yPhase, to: image.height - margin - 2, by: yStep) {
+                for x in stride(from: xPhase, to: image.width - 2, by: xStep) {
                     let p = y * image.bytesPerRow + x * 4
                     var edge = 0
                     for c in 0..<3 {
@@ -333,23 +365,72 @@ struct VisionOffsetEstimator: OffsetEstimating {
             }
             return result
         }
-        guard points.count > 512 else { return points }
-        return (0..<512).map { points[$0 * points.count / 512] }
+    }
+
+    /// A few differing glyphs are evidence only if they independently rule out the alias across the overlap.
+    private func distinguishes(_ previous: PixelImage, _ current: PixelImage, best: Int, alternative: Int,
+                               quantizationLimited: Bool, points: [SamplePoint], canRefine: Bool = true) -> Bool {
+        guard let bestRows = validator.contentRows(height: current.height, shift: best),
+              let otherRows = validator.contentRows(height: current.height, shift: alternative) else { return false }
+        // A match within one quantization level can rule out a shorter, contradictory fragment.
+        // A smaller exact fragment cannot claim superiority over a larger, possibly changing body.
+        let stableBaseline = quantizationLimited && bestRows.count >= otherRows.count
+        let start = stableBaseline ? otherRows.lowerBound : max(bestRows.lowerBound, otherRows.lowerBound)
+        let end = stableBaseline ? otherRows.upperBound : min(bestRows.upperBound, otherRows.upperBound)
+        guard end - start >= 24 else { return false }
+        let decisive = previous.pixels.withUnsafeBytes { leftRaw in
+            current.pixels.withUnsafeBytes { rightRaw in
+                let left = leftRaw.bindMemory(to: UInt8.self), right = rightRaw.bindMemory(to: UInt8.self)
+                let offsets = [0, 4, current.bytesPerRow]
+                var wins = 0, losses = 0, bands = [Int](repeating: 0, count: 4)
+                var firstWin = end, lastWin = start
+                for point in points where point.y >= start && point.y < end {
+                    let q = point.y * current.bytesPerRow + point.x * 4
+                    let p = q + best * current.bytesPerRow, a = q + alternative * current.bytesPerRow
+                    var bestError = 0, otherError = 0
+                    for offset in offsets {
+                        for c in 0..<3 {
+                            let value = Int(right[q + offset + c])
+                            if bestRows.contains(point.y) {
+                                bestError = max(bestError, abs(Int(left[p + offset + c]) - value))
+                            }
+                            otherError = max(otherError, abs(Int(left[a + offset + c]) - value))
+                        }
+                    }
+                    if bestError <= 12, otherError >= 48 {
+                        wins += 1
+                        firstWin = min(firstWin, point.y); lastWin = max(lastWin, point.y)
+                        bands[min(3, (point.y - start) * 4 / (end - start))] += 1
+                    } else if otherError <= 12, bestError >= 48 { losses += 1 }
+                }
+                let requiredBands = end - start >= 144 ? 3 : 2
+                return wins >= 24 && wins >= max(1, losses) * 8 &&
+                    bands.filter { $0 >= 4 }.count >= requiredBands && lastWin - firstWin >= min(24, (end - start) / 3)
+            }
+        }
+        guard !decisive, canRefine else { return decisive }
+        // Confirm sparse glyph evidence with a second, nonduplicating grid phase before declaring ambiguity.
+        let extra = textureSamples(in: current, dense: true, alternatePhase: true)
+        guard !extra.isEmpty else { return false }
+        return distinguishes(previous, current, best: best, alternative: alternative,
+                             quantizationLimited: quantizationLimited, points: points + extra, canRefine: false)
     }
 
     /// Test alternative offsets on ink/edges, not mostly-white document margins.
     private func sampledError(_ previous: PixelImage, _ current: PixelImage, shift: Int,
-                              points: [SamplePoint], cutoff: Double) -> (mean: Double, badFraction: Double) {
-        previous.pixels.withUnsafeBytes { leftRaw in
+                              points: [SamplePoint], cutoff: Double) -> (mean: Double, badFraction: Double, maximumError: Int) {
+        guard let rows = validator.contentRows(height: current.height, shift: shift) else { return (1, 1, 255) }
+        // Evidence must be relative to the shared body, not to samples outside this displacement's overlap.
+        let sampleCount = points.reduce(0) { $0 + (rows.contains($1.y) ? 1 : 0) }
+        guard sampleCount >= 24 else { return (1, 1, 255) }
+        return previous.pixels.withUnsafeBytes { leftRaw in
             current.pixels.withUnsafeBytes { rightRaw in
                 let left = leftRaw.bindMemory(to: UInt8.self), right = rightRaw.bindMemory(to: UInt8.self)
-                var count = 0, bad = 0, total = 0
+                var count = 0, bad = 0, total = 0, maximum = 0
                 let patchOffsets = [0, 4, current.bytesPerRow]
-                let maximumError = cutoff * Double(points.count * 765 * patchOffsets.count)
-                let margin = previous.height / 6
-                for point in points {
+                let maximumError = cutoff * Double(sampleCount * 765 * patchOffsets.count)
+                for point in points where rows.contains(point.y) {
                     let py = point.y + shift
-                    guard py >= margin, py < previous.height - margin else { continue }
                     let p = py * previous.bytesPerRow + point.x * 4
                     let q = point.y * current.bytesPerRow + point.x * 4
                     var worst = 0
@@ -361,10 +442,10 @@ struct VisionOffsetEstimator: OffsetEstimating {
                     }
                     count += 1
                     if worst > 32 { bad += 1 }
-                    if Double(total) > maximumError { return (1, 1) }
+                    maximum = max(maximum, worst)
+                    if Double(total) > maximumError { return (1, 1, 255) }
                 }
-                guard count >= max(12, points.count / 4) else { return (1, 1) }
-                return (Double(total) / Double(count * 765 * patchOffsets.count), Double(bad) / Double(count))
+                return (Double(total) / Double(count * 765 * patchOffsets.count), Double(bad) / Double(count), maximum)
             }
         }
     }

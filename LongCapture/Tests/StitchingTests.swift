@@ -479,4 +479,168 @@ final class StitchingTests: XCTestCase {
             try assertPixelsEqual(sut.finish().image, expected)
         }
     }
+
+    func testRealVisionFastScrollWithConfirmedInteriorOverlapInBothDirections() throws {
+        let canvas = TextTestCanvas(height: 3_000)
+        for positions in [[120, 384, 672, 960], [1_600, 1_336, 1_048, 760]] {
+            let sut = StitchingController()
+            for y in positions {
+                let frame = try withViewportOverlay(withViewportOverlay(canvas.frame(at: y, height: 480),
+                                                                         edge: .top), edge: .bottom)
+                let update = sut.accept(frame)
+                XCTAssertEqual(update.action, .grew, "A 55-60% move still has verified body overlap: \(update.message ?? "")")
+            }
+            let start = positions.min()!, height = positions.max()! - start + 480
+            let expected = try withViewportOverlay(withViewportOverlay(canvas.frame(at: start, height: height),
+                                                                       edge: .top), edge: .bottom)
+            let result = try sut.finish()
+            XCTAssertFalse(result.incomplete)
+            try assertPixelsEqual(result.image, expected)
+        }
+    }
+
+    func testRealVisionNumberedListDistinguishesSimilarButNotIdenticalRows() throws {
+        let canvas = TextTestCanvas(height: 4_000, lineText: { row in
+            String(format: "%04d  An ordinary list item with the same description on every line.", row)
+        })
+        for positions in [[120, 157, 198, 244, 283], [1_200, 1_163, 1_122, 1_076, 1_037],
+                          [3_000, 2_963, 2_926, 2_889, 2_852, 2_815]] {
+            let sut = StitchingController()
+            for y in positions {
+                let update = sut.accept(canvas.frame(at: y, height: 480))
+                XCTAssertEqual(update.action, .grew, "Unique row numbers must disambiguate repeated prose: \(update.message ?? "")")
+            }
+            let result = try sut.finish()
+            XCTAssertFalse(result.incomplete)
+            let start = positions.min()!, height = positions.max()! - start + 480
+            try assertPixelsEqual(result.image, canvas.frame(at: start, height: height))
+        }
+    }
+
+    func testRealVisionSimilarListWithoutActualOverlapStillRequiresRecovery() throws {
+        let canvas = TextTestCanvas(height: 2_400, lineText: { row in
+            String(format: "%04d  An ordinary list item with the same description on every line.", row)
+        })
+        for positions in [[120, 1_480], [1_480, 120], [120, 720], [120, 1_320], [1_720, 120]] {
+            let sut = StitchingController()
+            let first = canvas.frame(at: positions[0], height: 480)
+            _ = sut.accept(first)
+            XCTAssertEqual(sut.accept(canvas.frame(at: positions[1], height: 480)).action, .needsRecovery,
+                           "Similar wording must not invent a match across missing content")
+            let result = try sut.finish()
+            XCTAssertTrue(result.incomplete)
+            try assertPixelsEqual(result.image, first)
+        }
+    }
+
+    func testRealVisionRepeatedProseAndOneLocalMarkerRemainAmbiguous() throws {
+        for uniqueRow in [nil, 12] {
+            let canvas = TextTestCanvas(height: 2_400, lineText: { row in
+                row == uniqueRow ? "One isolated marker, not distributed displacement evidence." :
+                    "An ordinary list item with the same description on every line."
+            })
+            let sut = StitchingController()
+            let first = canvas.frame(at: 120, height: 480)
+            _ = sut.accept(first)
+            XCTAssertEqual(sut.accept(canvas.frame(at: 157, height: 480)).action, .needsRecovery)
+            let result = try sut.finish()
+            XCTAssertTrue(result.incomplete)
+            try assertPixelsEqual(result.image, first)
+        }
+    }
+
+    func testRealVisionNumberedListSlowScrollAndReverseVisitsWithEdgeOverlays() throws {
+        let canvas = TextTestCanvas(height: 2_400, lineText: { row in
+            String(format: "%04d  An ordinary list item with the same description on every line.", row)
+        })
+        for sign in [1, -1] {
+            let positions = [0, 1, 3, 6, 46, 31, 13, 76].map { 800 + sign * $0 }
+            let actions: [StitchAction] = [.grew, .grew, .grew, .grew, .grew, .stayed, .stayed, .grew]
+            let sut = StitchingController()
+            for (y, action) in zip(positions, actions) {
+                let frame = try withViewportOverlay(withViewportOverlay(canvas.frame(at: y, height: 480),
+                                                                         edge: .top), edge: .bottom)
+                let update = sut.accept(frame)
+                XCTAssertEqual(update.action, action, update.message ?? "No reason")
+            }
+            let start = positions.min()!, height = positions.max()! - start + 480
+            let expected = try withViewportOverlay(withViewportOverlay(canvas.frame(at: start, height: height),
+                                                                       edge: .top), edge: .bottom)
+            let result = try sut.finish()
+            XCTAssertFalse(result.incomplete)
+            try assertPixelsEqual(result.image, expected)
+        }
+    }
+
+    func testRealVisionFastOverlapCannotHideCorruptionAndCanRecover() throws {
+        let canvas = TestCanvas(height: 2_000)
+        for shift in [264, -264] {
+            let sut = StitchingController()
+            let first = canvas.frame(at: 700, height: 480)
+            _ = sut.accept(first)
+            let next = canvas.frame(at: 700 + shift, height: 480)
+            var pixels = try PixelImage(next).pixels
+            let rows = try XCTUnwrap(OverlapValidator().contentRows(height: 480, shift: shift))
+            pixels.withUnsafeMutableBytes { raw in
+                let bytes = raw.bindMemory(to: UInt8.self)
+                for y in rows {
+                    for x in 0..<canvas.width {
+                        let p = (y * canvas.width + x) * 4
+                        bytes[p] = 255; bytes[p + 1] = 255; bytes[p + 2] = 255
+                    }
+                }
+            }
+            let bad = TestCanvas.image(width: canvas.width, height: 480, pixels: pixels)
+            XCTAssertEqual(sut.accept(bad).action, .needsRecovery)
+            XCTAssertEqual(sut.accept(next).action, .grew, "Rejected content cannot replace the reliable anchor")
+            let result = try sut.finish()
+            XCTAssertFalse(result.incomplete)
+            try assertPixelsEqual(result.image, canvas.frame(at: min(700, 700 + shift), height: 744))
+        }
+    }
+
+    func testRealVisionListMatchingToleratesOneLevelRasterNoise() throws {
+        let canvas = TextTestCanvas(height: 2_400, lineText: { row in
+            String(format: "%04d  An ordinary list item with the same description on every line.", row)
+        })
+        for shift in [37, -37] {
+            let previous = try PixelImage(canvas.frame(at: 800, height: 480))
+            var pixels = try PixelImage(canvas.frame(at: 800 + shift, height: 480)).pixels
+            pixels.withUnsafeMutableBytes { raw in
+                let bytes = raw.bindMemory(to: UInt8.self)
+                for p in stride(from: 0, to: bytes.count, by: 4) {
+                    for c in 0..<3 { bytes[p + c] = bytes[p + c] == 0 ? 0 : bytes[p + c] - 1 }
+                }
+            }
+            let current = try PixelImage(TestCanvas.image(width: previous.width, height: 480, pixels: pixels))
+            XCTAssertEqual(VisionOffsetEstimator().estimate(previous: previous, current: current).shift, shift)
+        }
+    }
+
+    func testRealVisionPeriodicContentWithScatteredChangesCannotPreferAShortExactFragment() throws {
+        let canvas = TextTestCanvas(height: 2_400, lineText: { _ in
+            "An ordinary list item with the same description on every line."
+        })
+        let sut = StitchingController()
+        let first = canvas.frame(at: 120, height: 480)
+        _ = sut.accept(first)
+        var pixels = try PixelImage(canvas.frame(at: 157, height: 480)).pixels
+        pixels.withUnsafeMutableBytes { raw in
+            let bytes = raw.bindMemory(to: UInt8.self)
+            for top in [100, 210, 320] {
+                for y in top..<(top + 10) {
+                    for x in 18..<50 {
+                        let p = (y * canvas.image.width + x) * 4
+                        bytes[p] = 60; bytes[p + 1] = 150; bytes[p + 2] = 210
+                    }
+                }
+            }
+        }
+        let changed = TestCanvas.image(width: canvas.image.width, height: 480, pixels: pixels)
+        XCTAssertEqual(sut.accept(changed).action, .needsRecovery,
+                       "Avoiding changing regions is not evidence of a larger displacement")
+        let result = try sut.finish()
+        XCTAssertTrue(result.incomplete)
+        try assertPixelsEqual(result.image, first)
+    }
 }
