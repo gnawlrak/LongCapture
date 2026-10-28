@@ -46,15 +46,22 @@ final class StitchingTests: XCTestCase {
         try assertPixelsEqual(sut.finish().image, canvas.frame(at: 120, height: 200))
     }
 
-    func testOneToThreePixelScrollsAccumulateAndStoreOnlyNewStrips() throws {
+    func testOneToThreePixelScrollsAccumulateWithBoundedViewportBuffers() throws {
         let canvas = TestCanvas()
         let shifts = Array(repeating: [1, 2, 3], count: 20).flatMap { $0 }
         let sut = StitchingController(estimator: ScriptedEstimator(shifts.map(Optional.some)))
         var y = 0
         _ = sut.accept(canvas.frame(at: y, height: 160))
-        for shift in shifts { y += shift; _ = sut.accept(canvas.frame(at: y, height: 160)) }
-        XCTAssertEqual(sut.retainedStripBytes, canvas.width * (160 + y) * 4)
+        for shift in shifts {
+            y += shift
+            XCTAssertEqual(sut.accept(canvas.frame(at: y, height: 160)).action, .grew)
+            XCTAssertLessThanOrEqual(sut.retainedPixelBytes, canvas.width * (160 + y + 2 * 160) * 4)
+        }
+        let outputBytes = canvas.width * (160 + y) * 4
+        XCTAssertGreaterThanOrEqual(sut.retainedPixelBytes, outputBytes)
+        XCTAssertLessThanOrEqual(sut.retainedPixelBytes, outputBytes + 2 * canvas.width * 160 * 4)
         try assertPixelsEqual(sut.finish().image, canvas.frame(at: 0, height: 160 + y))
+        XCTAssertEqual(sut.retainedPixelBytes, 0)
     }
 
     func testDuplicateFramesDoNotLockDirectionOrAddContent() throws {
@@ -116,7 +123,7 @@ final class StitchingTests: XCTestCase {
         let canvas = TestCanvas()
         let sut = StitchingController(limits: StitchLimits(maximumPixels: canvas.width * 100, maximumHeight: 50_000))
         XCTAssertEqual(sut.accept(canvas.frame(at: 0, height: 120)).action, .hitLimit)
-        XCTAssertEqual(sut.retainedStripBytes, canvas.width * 100 * 4)
+        XCTAssertEqual(sut.retainedPixelBytes, canvas.width * 100 * 4)
         try assertPixelsEqual(sut.finish().image, canvas.frame(at: 0, height: 100))
     }
 
@@ -124,6 +131,7 @@ final class StitchingTests: XCTestCase {
         let sut = StitchingController()
         _ = sut.accept(TestCanvas.blank())
         sut.cancel()
+        XCTAssertEqual(sut.retainedPixelBytes, 0)
         XCTAssertEqual(sut.accept(TestCanvas.blank()).action, .rejected)
         XCTAssertThrowsError(try sut.finish()) { XCTAssertEqual($0 as? StitchError, .cancelled) }
     }
@@ -187,5 +195,164 @@ final class StitchingTests: XCTestCase {
             XCTAssertEqual(sut.accept(canvas.frame(at: y, height: 480)).action, .grew)
         }
         try assertPixelsEqual(sut.finish().image, canvas.frame(at: 200, height: 560))
+    }
+
+    func testRealVisionDownwardCaptureDoesNotRepeatViewportFooterOrFade() throws {
+        let canvas = TextTestCanvas()
+        let sut = StitchingController()
+        let positions = [80, 100, 136, 178, 211, 246, 286]
+        for y in positions {
+            let frame = try withViewportOverlay(canvas.frame(at: y, height: 480), edge: .bottom)
+            let update = sut.accept(frame)
+            XCTAssertEqual(update.action, .grew, update.message ?? "No reason")
+        }
+        let result = try sut.finish()
+        XCTAssertFalse(result.incomplete)
+        let expected = try withViewportOverlay(canvas.frame(at: 80, height: 686), edge: .bottom)
+        try assertPixelsEqual(result.image, expected)
+    }
+
+    func testRealVisionUpwardCaptureDoesNotRepeatViewportHeaderOrFade() throws {
+        let canvas = TextTestCanvas()
+        let sut = StitchingController()
+        for y in [420, 389, 355, 322, 280] {
+            let update = sut.accept(try withViewportOverlay(canvas.frame(at: y, height: 480), edge: .top))
+            XCTAssertEqual(update.action, .grew, update.message ?? "No reason")
+        }
+        let result = try sut.finish()
+        XCTAssertFalse(result.incomplete)
+        try assertPixelsEqual(result.image, withViewportOverlay(canvas.frame(at: 280, height: 620), edge: .top))
+    }
+
+    func testReverseVisitKeepsCleanFrontierInsteadOfReplacingItWithOldViewport() throws {
+        let canvas = TextTestCanvas()
+        let positions = [80, 114, 90, 150, 118, 186, 211, 175]
+        let sut = StitchingController(estimator: ScriptedEstimator([34, -24, 60, -32, 68, 25, -36]))
+        let actions: [StitchAction] = [.grew, .grew, .stayed, .grew, .stayed, .grew, .grew, .stayed]
+        for (y, action) in zip(positions, actions) {
+            XCTAssertEqual(sut.accept(try withViewportOverlay(canvas.frame(at: y, height: 480), edge: .bottom)).action, action)
+        }
+        try assertPixelsEqual(sut.finish().image, withViewportOverlay(canvas.frame(at: 80, height: 611), edge: .bottom))
+    }
+
+    func testRealVisionSlowScrollDoesNotBakeEdgeControlsIntoEachNewStrip() throws {
+        let canvas = TextTestCanvas()
+        let sut = StitchingController()
+        for y in [120, 121, 123, 126, 127, 129, 132, 133, 135, 138] {
+            let update = sut.accept(try withViewportOverlay(canvas.frame(at: y, height: 480), edge: .bottom))
+            XCTAssertEqual(update.action, .grew, update.message ?? "No reason")
+        }
+        try assertPixelsEqual(sut.finish().image, withViewportOverlay(canvas.frame(at: 120, height: 498), edge: .bottom))
+    }
+
+    func testUnverifiedSeamCannotAdvanceEvenWithAnInjectedOffset() throws {
+        let canvas = TestCanvas()
+        let sut = StitchingController(estimator: ScriptedEstimator([40, 40]))
+        let first = canvas.frame(at: 0, height: 300)
+        _ = sut.accept(first)
+        var changed = try PixelImage(canvas.frame(at: 40, height: 300)).pixels
+        changed.withUnsafeMutableBytes { raw in
+            let bytes = raw.bindMemory(to: UInt8.self)
+            for p in stride(from: 0, to: 260 * canvas.width * 4, by: 4) {
+                bytes[p] = 255; bytes[p + 1] = 255; bytes[p + 2] = 255
+            }
+        }
+        let bad = TestCanvas.image(width: canvas.width, height: 300, pixels: changed)
+        let update = sut.accept(bad)
+        XCTAssertEqual(update.action, .needsRecovery)
+        XCTAssertEqual(update.height, 300, "Unverified seam must not change position or exported bounds")
+        XCTAssertEqual(sut.accept(canvas.frame(at: 40, height: 300)).action, .grew)
+        let result = try sut.finish()
+        XCTAssertFalse(result.incomplete)
+        try assertPixelsEqual(result.image, canvas.frame(at: 0, height: 340))
+    }
+
+    func testBothViewportEdgesAreNotRepeatedInEitherDirection() throws {
+        let canvas = TextTestCanvas()
+        for positions in [[100, 134, 260, 285, 330], [620, 581, 450, 427, 390]] {
+            let sut = StitchingController()
+            for y in positions {
+                let frame = try withViewportOverlay(withViewportOverlay(canvas.frame(at: y, height: 480),
+                                                                         edge: .top), edge: .bottom)
+                let update = sut.accept(frame)
+                XCTAssertEqual(update.action, .grew, update.message ?? "No reason")
+            }
+            let start = positions.min()!, height = positions.max()! - start + 480
+            let expected = try withViewportOverlay(withViewportOverlay(canvas.frame(at: start, height: height),
+                                                                       edge: .top), edge: .bottom)
+            let result = try sut.finish()
+            XCTAssertFalse(result.incomplete)
+            try assertPixelsEqual(result.image, expected)
+        }
+    }
+
+    func testUpwardReverseVisitsRetainTheFrontierNotTheLatestViewport() throws {
+        let canvas = TextTestCanvas()
+        let sut = StitchingController(estimator: ScriptedEstimator([-30, 28, -68, 35, -85, 24, -55, 21]))
+        let positions = [700, 670, 698, 630, 665, 580, 604, 549, 570]
+        let actions: [StitchAction] = [.grew, .grew, .stayed, .grew, .stayed, .grew, .stayed, .grew, .stayed]
+        for (y, action) in zip(positions, actions) {
+            XCTAssertEqual(sut.accept(try withViewportOverlay(canvas.frame(at: y, height: 480), edge: .top)).action,
+                           action)
+        }
+        XCTAssertLessThanOrEqual(sut.retainedPixelBytes, canvas.image.width * (631 + 2 * 480) * 4)
+        try assertPixelsEqual(sut.finish().image, withViewportOverlay(canvas.frame(at: 549, height: 631), edge: .top))
+    }
+
+    func testPartialCapsSealFrontierWithoutCommittingStaleEdgePixels() throws {
+        let canvas = TextTestCanvas()
+        for (positions, shift, edge, start) in [([100, 340], 240, ViewportOverlayEdge.bottom, 100),
+                                                ([700, 460], -240, ViewportOverlayEdge.top, 580)] {
+            let sut = StitchingController(estimator: ScriptedEstimator([shift]),
+                limits: StitchLimits(maximumPixels: canvas.image.width * 600, maximumHeight: 50_000))
+            XCTAssertEqual(sut.accept(try withViewportOverlay(canvas.frame(at: positions[0], height: 480), edge: edge)).action,
+                           .grew)
+            XCTAssertEqual(sut.accept(try withViewportOverlay(canvas.frame(at: positions[1], height: 480), edge: edge)).action,
+                           .hitLimit)
+            XCTAssertEqual(sut.retainedPixelBytes, canvas.image.width * 600 * 4)
+            let result = try sut.finish()
+            XCTAssertTrue(result.incomplete)
+            try assertPixelsEqual(result.image, canvas.frame(at: start, height: 600))
+        }
+    }
+
+    func testRejectedInteriorSeamDoesNotMoveOrLockStitchState() throws {
+        let canvas = TestCanvas()
+        var sut = try StitchState(first: PixelImage(canvas.frame(at: 400, height: 300)), limits: .default)
+        let blank = try PixelImage(TestCanvas.blank(width: canvas.width, height: 300))
+        XCTAssertEqual(sut.accept(blank, shift: 40), .needsRecovery)
+        XCTAssertNil(sut.direction)
+        XCTAssertEqual(sut.position, 0)
+        XCTAssertEqual(sut.upperBound, 0)
+        XCTAssertEqual(sut.lowerBound, 300)
+        XCTAssertEqual(sut.accept(try PixelImage(canvas.frame(at: 360, height: 300)), shift: -40), .grew)
+        XCTAssertEqual(sut.direction, .up)
+        try assertPixelsEqual(sut.render(), canvas.frame(at: 360, height: 340))
+    }
+
+    func testRealVisionStillRejectsPeriodicRowsWithViewportOverlay() throws {
+        let canvas = TestCanvas(repeatedPeriod: 24)
+        let sut = StitchingController()
+        _ = sut.accept(try withViewportOverlay(canvas.frame(at: 0, height: 480), edge: .bottom))
+        let update = sut.accept(try withViewportOverlay(canvas.frame(at: 12, height: 480), edge: .bottom))
+        XCTAssertEqual(update.action, .needsRecovery)
+        XCTAssertEqual(update.height, 480)
+        let result = try sut.finish()
+        XCTAssertTrue(result.incomplete)
+        try assertPixelsEqual(result.image, withViewportOverlay(canvas.frame(at: 0, height: 480), edge: .bottom))
+    }
+
+    func testRealVisionWideRetinaTextWithEdgeOverlayPreservesPixels() throws {
+        let canvas = TextTestCanvas(width: 1_280, height: 2_200)
+        let sut = StitchingController()
+        let positions = [100, 101, 130, 216, 179, 251]
+        let actions: [StitchAction] = [.grew, .grew, .grew, .grew, .stayed, .grew]
+        for (y, action) in zip(positions, actions) {
+            let update = sut.accept(try withViewportOverlay(canvas.frame(at: y, height: 960), edge: .bottom))
+            XCTAssertEqual(update.action, action, update.message ?? "No reason")
+        }
+        let result = try sut.finish()
+        XCTAssertFalse(result.incomplete)
+        try assertPixelsEqual(result.image, withViewportOverlay(canvas.frame(at: 100, height: 1_111), edge: .bottom))
     }
 }

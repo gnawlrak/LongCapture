@@ -11,7 +11,8 @@ final class StitchingController {
     private var cancelled = false
     private var recoveryMessage: String?
     private let limitMessage = "已达到 6,400 万像素或 50,000 像素高度上限，已保留确认的部分。"
-    var retainedStripBytes: Int { state?.retainedStripBytes ?? 0 }
+    /// Conservative upper bound; the anchor and frontier usually share the same immutable Data.
+    var retainedPixelBytes: Int { (state?.retainedPixelBytes ?? 0) + (lastReliable?.pixels.count ?? 0) }
 
     init(estimator: any OffsetEstimating = VisionOffsetEstimator(), limits: StitchLimits = .default) {
         self.estimator = estimator; self.limits = limits
@@ -25,7 +26,7 @@ final class StitchingController {
             let frame = try PixelImage(image)
             guard let previous = lastReliable else {
                 state = try StitchState(first: frame, limits: limits)
-                lastReliable = frame
+                lastReliable = state?.atLimit == true ? nil : frame
                 return state?.atLimit == true ? update(.hitLimit, message: limitMessage) : update(.grew)
             }
             guard frame.width == previous.width, frame.height == previous.height else {
@@ -39,9 +40,12 @@ final class StitchingController {
             guard let shift = estimate.shift, shift > -frame.height, shift < frame.height else {
                 return recover(estimate.message ?? "匹配不可靠，已暂停拼接。请往回滚动恢复。")
             }
+            guard OverlapValidator().score(previous, frame, shift: shift).isReliable else {
+                return recover("无法确认正文重叠，已暂停拼接。请往回滚动恢复。")
+            }
             let action = state?.accept(frame, shift: shift) ?? .rejected
             if action == .needsRecovery || action == .rejected { return recover("无法确认画面重叠，请往回滚动恢复。") }
-            lastReliable = frame
+            lastReliable = state?.atLimit == true ? nil : frame
             recoveryMessage = nil
             return update(action, message: action == .hitLimit ? limitMessage : nil)
         } catch { return recover(error.localizedDescription) }

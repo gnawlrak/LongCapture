@@ -103,6 +103,42 @@ struct TextTestCanvas {
     }
 }
 
+enum ViewportOverlayEdge { case top, bottom }
+
+/// A viewport-fixed fade and jump button, not part of the scrolling document.
+func withViewportOverlay(_ image: CGImage, edge: ViewportOverlayEdge) throws -> CGImage {
+    let source = try PixelImage(image)
+    let width = source.width, height = source.height
+    let fadeHeight = 72
+    precondition(height > fadeHeight && width > 48)
+    var pixels = source.pixels
+    pixels.withUnsafeMutableBytes { raw in
+        let bytes = raw.bindMemory(to: UInt8.self)
+        for distance in 0..<fadeHeight {
+            let y = edge == .bottom ? height - 1 - distance : distance
+            for x in 0..<width {
+                let p = (y * width + x) * 4
+                for c in 0..<3 {
+                    let value = Int(bytes[p + c])
+                    bytes[p + c] = UInt8(value + (255 - value) * (fadeHeight - distance) / fadeHeight)
+                }
+            }
+        }
+        let centerY = edge == .bottom ? height - 36 : 35
+        for dy in -14...14 {
+            for dx in -14...14 where dx * dx + dy * dy <= 196 {
+                let ring = dx * dx + dy * dy >= 169
+                let arrow = (abs(dx) <= 1 && (-6...5).contains(dy)) ||
+                    ((0...6).contains(dy) && abs(abs(dx) - (6 - dy)) <= 1)
+                let value: UInt8 = ring ? 215 : arrow ? 90 : 255
+                let p = ((centerY + dy) * width + width / 2 + dx) * 4
+                bytes[p] = value; bytes[p + 1] = value; bytes[p + 2] = value
+            }
+        }
+    }
+    return TestCanvas.image(width: width, height: height, pixels: pixels)
+}
+
 func assertPixelsEqual(_ actual: CGImage, _ expected: CGImage,
                        file: StaticString = #filePath, line: UInt = #line) throws {
     XCTAssertEqual(actual.width, expected.width, file: file, line: line)

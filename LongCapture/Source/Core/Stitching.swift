@@ -120,7 +120,14 @@ struct PixelImage {
 /// The confirmed viewport and the exported interval are intentionally independent.
 struct StitchState {
     private struct Strip { let origin: Int; let rows: Int; let pixels: Data }
+    private struct Frontier {
+        let frame: PixelImage
+        let position: Int
+        let start: Int
+        let end: Int
+    }
     private var strips: [Strip] = []
+    private var frontier: Frontier?
     let width: Int
     let frameHeight: Int
     let maximumHeight: Int
@@ -130,7 +137,9 @@ struct StitchState {
     private(set) var position = 0
     private(set) var atLimit: Bool
     var imageHeight: Int { lowerBound - upperBound }
-    var retainedStripBytes: Int { strips.reduce(0) { $0 + $1.pixels.count } }
+    var retainedPixelBytes: Int {
+        strips.reduce(0) { $0 + $1.pixels.count } + (frontier?.frame.pixels.count ?? 0)
+    }
 
     init(first: PixelImage, limits: StitchLimits) throws {
         width = first.width; frameHeight = first.height
@@ -138,32 +147,77 @@ struct StitchState {
         guard maximumHeight > 0 else { throw StitchError.invalidFrame }
         lowerBound = min(first.height, maximumHeight)
         atLimit = lowerBound == maximumHeight
-        appendRows(from: first, row: 0, count: lowerBound, origin: 0)
+        frontier = Frontier(frame: first, position: 0, start: 0, end: lowerBound)
+        if atLimit { sealFrontier() }
     }
 
     mutating func accept(_ frame: PixelImage, shift: Int) -> StitchAction {
         guard frame.width == width, frame.height == frameHeight else { return .needsRecovery }
         guard !atLimit else { return .hitLimit }
         guard shift > -frameHeight, shift < frameHeight else { return .needsRecovery }
-        if shift != 0, direction == nil { direction = shift > 0 ? .down : .up }
-        position += shift
+        let nextPosition = position + shift
+        let nextDirection = direction ?? (shift == 0 ? nil : shift > 0 ? .down : .up)
         let room = maximumHeight - imageHeight
         var added = 0
-        if direction == .down {
-            let end = position + frameHeight
+        if nextDirection == .down {
+            let end = nextPosition + frameHeight
             if end > lowerBound {
                 added = min(end - lowerBound, room)
-                appendRows(from: frame, row: lowerBound - position, count: added, origin: lowerBound)
+                guard let old = frontier,
+                      let seam = matchingSeam(old, frame: frame, position: nextPosition) else {
+                    return .needsRecovery
+                }
+                appendRows(from: old.frame, row: old.start - old.position,
+                           count: seam - old.start, origin: old.start)
                 lowerBound += added
+                frontier = Frontier(frame: frame, position: nextPosition, start: seam, end: lowerBound)
             }
-        } else if direction == .up, position < upperBound {
-            added = min(upperBound - position, room)
+        } else if nextDirection == .up, nextPosition < upperBound {
+            added = min(upperBound - nextPosition, room)
             let newTop = upperBound - added
-            appendRows(from: frame, row: newTop - position, count: added, origin: newTop)
+            guard let old = frontier,
+                  let seam = matchingSeam(old, frame: frame, position: nextPosition) else {
+                return .needsRecovery
+            }
+            appendRows(from: old.frame, row: seam - old.position, count: old.end - seam, origin: seam)
             upperBound = newTop
+            frontier = Frontier(frame: frame, position: nextPosition, start: newTop, end: seam)
         }
+        position = nextPosition
+        direction = nextDirection
         atLimit = imageHeight == maximumHeight
+        if atLimit { sealFrontier() }
         return atLimit ? .hitLimit : added > 0 ? .grew : .stayed
+    }
+
+    private func matchingSeam(_ old: Frontier, frame: PixelImage, position: Int) -> Int? {
+        let shift = position - old.position
+        let validator = OverlapValidator()
+        guard validator.score(old.frame, frame, shift: shift).isReliable,
+              let rows = validator.contentRows(height: frameHeight, shift: shift) else { return nil }
+        let start = max(rows.lowerBound, old.start - position)
+        let end = min(rows.upperBound, old.end - position)
+        guard start < end else { return nil }
+        // Keep the growing viewport replaceable; commit only through a verified interior seam.
+        let middle = start + (end - start) / 2
+        let radius = min(12, (end - start) / 4)
+        for distance in 0...(end - start) / 2 {
+            for row in distance == 0 ? [middle] : [middle - distance, middle + distance] {
+                let band = (row - radius)..<(row + radius + 1)
+                guard band.lowerBound >= start, band.upperBound <= end else { continue }
+                let score = validator.score(old.frame, frame, shift: shift, rows: band)
+                if score.mean <= 0.008, score.badFraction <= 0.02,
+                   score.laneMeans.allSatisfy({ $0 <= 0.012 }) { return position + row }
+            }
+        }
+        return nil
+    }
+
+    private mutating func sealFrontier() {
+        guard let frontier else { return }
+        appendRows(from: frontier.frame, row: frontier.start - frontier.position,
+                   count: frontier.end - frontier.start, origin: frontier.start)
+        self.frontier = nil
     }
 
     private mutating func appendRows(from frame: PixelImage, row: Int, count: Int, origin: Int) {
@@ -182,6 +236,13 @@ struct StitchState {
                            source.baseAddress!, strip.rows * width * 4)
                 }
             }
+            if let frontier {
+                _ = frontier.frame.pixels.withUnsafeBytes { source in
+                    memcpy(destination.baseAddress!.advanced(by: (frontier.start - upperBound) * width * 4),
+                           source.baseAddress!.advanced(by: (frontier.start - frontier.position) * width * 4),
+                           (frontier.end - frontier.start) * width * 4)
+                }
+            }
         }
         return try PixelImage.makeImage(width: width, height: imageHeight, pixels: output)
     }
@@ -190,6 +251,7 @@ struct StitchState {
 /// Vision proposes a displacement; independent pixels, texture, and alternative offsets must validate it.
 struct VisionOffsetEstimator: OffsetEstimating {
     private let maximumShiftFraction = 0.65
+    private let validator = OverlapValidator()
 
     func estimate(previous: PixelImage, current: PixelImage) -> MoveEstimate {
         guard previous.width == current.width, previous.height == current.height,
@@ -210,40 +272,43 @@ struct VisionOffsetEstimator: OffsetEstimating {
                 candidates.append(Double(-transform.ty))
             }
             guard candidates.count == 3 else { return unreliable() }
-            let median = candidates.sorted()[1]
-            guard candidates.filter({ abs($0 - median) <= 1.5 }).count >= 2 else { return unreliable() }
             let maximumShift = Int(Double(previous.height) * maximumShiftFraction)
-            guard abs(median) <= Double(maximumShift) else { return unreliable() }
-            let nominal = Int(median.rounded())
-            let possibilities = (nominal - 2 ... nominal + 2).filter { abs($0) <= maximumShift }
-            let scores = possibilities.map { ($0, overlap(previous, current, shift: $0, columns: 64, rows: 96)) }
-            guard let best = scores.min(by: { $0.1.mean < $1.1.mean }),
-                  best.1.textured, best.1.mean <= 0.028, best.1.badFraction <= 0.12,
-                  best.1.laneMeans.allSatisfy({ $0 <= 0.045 }) else { return unreliable() }
-            let shift = best.0
-            // Repeated list rows can align perfectly at several offsets. Never choose one arbitrarily.
+            // Repeated text can give two lanes the same wrong alias. Validate every proposal on pixels.
+            let possibilities = Set(candidates.flatMap { candidate -> [Int] in
+                guard abs(candidate) <= Double(maximumShift) else { return [] }
+                let nominal = Int(candidate.rounded())
+                return (nominal - 2 ... nominal + 2).filter { abs($0) <= maximumShift }
+            }).sorted()
             let samples = textureSamples(in: current)
-            let ambiguityThreshold = 0.020 + best.1.mean * 2
-            for alternative in -maximumShift...maximumShift where abs(alternative - shift) > 2 {
-                let score = sampledError(previous, current, shift: alternative,
-                                         points: samples, cutoff: ambiguityThreshold)
-                if score.mean <= ambiguityThreshold, score.badFraction < 0.16 {
+            guard samples.count >= 24 else { return unreliable() }
+            let proposed = Set(possibilities)
+            let search = possibilities + (-maximumShift...maximumShift).filter { !proposed.contains($0) }
+            typealias Match = (shift: Int, mean: Double, badFraction: Double)
+            var matches: [Match] = []
+            var best: Match?
+            // Pixel search also tests offsets Vision missed; it cannot bypass texture or ambiguity gates.
+            for shift in search where validator.contentRows(height: current.height, shift: shift) != nil {
+                let cutoff = min(0.12, max(0.028, 0.020 + (best?.mean ?? 0.05) * 2))
+                let score = sampledError(previous, current, shift: shift, points: samples, cutoff: cutoff)
+                let match = (shift: shift, mean: score.mean, badFraction: score.badFraction)
+                matches.append(match)
+                if match.mean < (best?.mean ?? .infinity) { best = match }
+            }
+            guard let best, best.mean <= 0.028, best.badFraction <= 0.12,
+                  validator.score(previous, current, shift: best.shift).isReliable else { return unreliable() }
+            // Repeated list rows can align perfectly at several offsets. Never choose one arbitrarily.
+            let ambiguityThreshold = 0.020 + best.mean * 2
+            for match in matches where abs(match.shift - best.shift) > 2 {
+                if match.mean <= ambiguityThreshold, match.badFraction < 0.16 {
                     return MoveEstimate(shift: nil, message: "画面有重复图案，无法确认位移；请往回滚动恢复或更换选区。")
                 }
             }
-            return MoveEstimate(shift: shift)
+            return MoveEstimate(shift: best.shift)
         } catch { return unreliable() }
     }
 
     private func unreliable() -> MoveEstimate {
         MoveEstimate(shift: nil, message: "匹配不可靠，已暂停拼接。请缓慢往回滚动，回到最后确认的位置。")
-    }
-
-    private struct OverlapScore {
-        let mean: Double
-        let badFraction: Double
-        let laneMeans: [Double]
-        let textured: Bool
     }
 
     private struct SamplePoint { let x: Int; let y: Int }
@@ -252,13 +317,16 @@ struct VisionOffsetEstimator: OffsetEstimating {
         let points = image.pixels.withUnsafeBytes { raw -> [SamplePoint] in
             let bytes = raw.bindMemory(to: UInt8.self)
             var result: [SamplePoint] = []
-            for y in stride(from: 0, to: image.height - 1, by: max(1, image.height / 128)) {
-                for x in stride(from: 0, to: image.width - 1, by: max(1, image.width / 96)) {
+            let margin = image.height / 6
+            for y in stride(from: margin, to: image.height - margin - 2, by: max(1, image.height / 128)) {
+                for x in stride(from: 0, to: image.width - 2, by: max(1, image.width / 96)) {
                     let p = y * image.bytesPerRow + x * 4
                     var edge = 0
                     for c in 0..<3 {
-                        edge += abs(Int(bytes[p + c]) - Int(bytes[p + 4 + c]))
-                        edge += abs(Int(bytes[p + c]) - Int(bytes[p + image.bytesPerRow + c]))
+                        edge += max(abs(Int(bytes[p + c]) - Int(bytes[p + 4 + c])),
+                                    abs(Int(bytes[p + c]) - Int(bytes[p + 8 + c])))
+                        edge += max(abs(Int(bytes[p + c]) - Int(bytes[p + image.bytesPerRow + c])),
+                                    abs(Int(bytes[p + c]) - Int(bytes[p + 2 * image.bytesPerRow + c])))
                     }
                     if edge > 48 { result.append(SamplePoint(x: x, y: y)) }
                 }
@@ -276,42 +344,71 @@ struct VisionOffsetEstimator: OffsetEstimating {
             current.pixels.withUnsafeBytes { rightRaw in
                 let left = leftRaw.bindMemory(to: UInt8.self), right = rightRaw.bindMemory(to: UInt8.self)
                 var count = 0, bad = 0, total = 0
-                let maximumError = cutoff * Double(points.count * 765)
+                let patchOffsets = [0, 4, current.bytesPerRow]
+                let maximumError = cutoff * Double(points.count * 765 * patchOffsets.count)
+                let margin = previous.height / 6
                 for point in points {
                     let py = point.y + shift
-                    guard py >= 0, py < previous.height else { continue }
+                    guard py >= margin, py < previous.height - margin else { continue }
                     let p = py * previous.bytesPerRow + point.x * 4
                     let q = point.y * current.bytesPerRow + point.x * 4
                     var worst = 0
-                    for c in 0..<3 {
-                        let delta = abs(Int(left[p + c]) - Int(right[q + c]))
-                        total += delta; worst = max(worst, delta)
+                    for offset in patchOffsets {
+                        for c in 0..<3 {
+                            let delta = abs(Int(left[p + offset + c]) - Int(right[q + offset + c]))
+                            total += delta; worst = max(worst, delta)
+                        }
                     }
                     count += 1
                     if worst > 32 { bad += 1 }
                     if Double(total) > maximumError { return (1, 1) }
                 }
                 guard count >= max(12, points.count / 4) else { return (1, 1) }
-                return (Double(total) / Double(count * 765), Double(bad) / Double(count))
+                return (Double(total) / Double(count * 765 * patchOffsets.count), Double(bad) / Double(count))
             }
         }
     }
+}
 
-    private func overlap(_ previous: PixelImage, _ current: PixelImage, shift: Int,
-                         columns: Int, rows: Int) -> OverlapScore {
-        let overlapHeight = current.height - abs(shift)
-        guard overlapHeight > 1 else {
-            return OverlapScore(mean: 1, badFraction: 1, laneMeans: [1, 1, 1], textured: false)
+/// Header/footer bands are not dependable document pixels (fades and floating controls).
+/// Both viewports must agree on textured interior overlap before any state can advance.
+struct OverlapValidator {
+    struct Score {
+        let mean: Double
+        let badFraction: Double
+        let laneMeans: [Double]
+        let textured: Bool
+        var isReliable: Bool {
+            textured && mean <= 0.028 && badFraction <= 0.12 && laneMeans.allSatisfy { $0 <= 0.045 }
+        }
+        static let invalid = Score(mean: 1, badFraction: 1, laneMeans: [1, 1, 1], textured: false)
+    }
+
+    func contentRows(height: Int, shift: Int) -> Range<Int>? {
+        guard shift > -height, shift < height else { return nil }
+        let margin = height / 6
+        let start = max(margin, margin - shift), end = min(height - margin, height - margin - shift)
+        guard end - start >= max(8, min(24, height / 16)) else { return nil }
+        return start..<end
+    }
+
+    func score(_ previous: PixelImage, _ current: PixelImage, shift: Int,
+               rows requestedRows: Range<Int>? = nil) -> Score {
+        guard previous.width == current.width, previous.height == current.height,
+              current.width > 1, let content = contentRows(height: current.height, shift: shift) else { return .invalid }
+        let rows = requestedRows ?? content
+        guard !rows.isEmpty, rows.lowerBound >= content.lowerBound, rows.upperBound <= content.upperBound else {
+            return .invalid
         }
         return previous.pixels.withUnsafeBytes { leftRaw in
             current.pixels.withUnsafeBytes { rightRaw in
                 let left = leftRaw.bindMemory(to: UInt8.self), right = rightRaw.bindMemory(to: UInt8.self)
-                let startY = max(0, -shift), rowBytes = current.bytesPerRow
+                let rowBytes = current.bytesPerRow
                 var totals = [Double](repeating: 0, count: 3), counts = [Int](repeating: 0, count: 3)
                 var bad = 0, edges = 0, verticalEdges = 0, count = 0
-                let nx = min(columns, current.width - 1), ny = min(rows, overlapHeight - 1)
+                let nx = min(128, current.width - 1), ny = min(96, rows.count)
                 for iy in 0..<ny {
-                    let y = startY + iy * (overlapHeight - 1) / ny
+                    let y = rows.lowerBound + iy * rows.count / ny
                     for ix in 0..<nx {
                         let x = ix * (current.width - 1) / nx
                         let p = (y + shift) * rowBytes + x * 4, q = y * rowBytes + x * 4
@@ -333,10 +430,10 @@ struct VisionOffsetEstimator: OffsetEstimating {
                 }
                 let mean = totals.reduce(0, +) / Double(max(1, count))
                 let laneMeans = (0..<3).map { totals[$0] / Double(max(1, counts[$0])) }
-                return OverlapScore(mean: mean, badFraction: Double(bad) / Double(max(1, count)),
-                                    laneMeans: laneMeans,
-                                    textured: Double(edges) / Double(max(1, count)) >= 0.012 &&
-                                        Double(verticalEdges) / Double(max(1, count)) >= 0.004)
+                return Score(mean: mean, badFraction: Double(bad) / Double(max(1, count)),
+                             laneMeans: laneMeans,
+                             textured: Double(edges) / Double(max(1, count)) >= 0.012 &&
+                                Double(verticalEdges) / Double(max(1, count)) >= 0.004)
             }
         }
     }
