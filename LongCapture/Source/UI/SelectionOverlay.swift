@@ -7,11 +7,16 @@ final class SelectionOverlay: NSWindowController {
     private let selectionView: SelectionView
     private var resolved = false
 
-    init(displayRect: CGRect, onBegin: @escaping (CGRect) -> Void, onCancel: @escaping () -> Void) {
+    init(displayRect: CGRect, safeTopInset: CGFloat? = nil,
+         onBegin: @escaping (CGRect) -> Void, onCancel: @escaping () -> Void) {
         self.displayRect = displayRect
         self.onBegin = onBegin
         self.onCancel = onCancel
-        self.selectionView = SelectionView(frame: CGRect(origin: .zero, size: displayRect.size))
+        let screen = NSScreen.screens.first { $0.frame == displayRect }
+        // The menu bar can be taller than the notch safe area, or hidden independently of it.
+        let systemTopInset = screen.map { max($0.frame.maxY - $0.visibleFrame.maxY, $0.safeAreaInsets.top) } ?? 0
+        self.selectionView = SelectionView(frame: CGRect(origin: .zero, size: displayRect.size),
+                                           safeTopInset: max(0, safeTopInset ?? systemTopInset))
         let window = SelectionWindow(contentRect: displayRect, styleMask: .borderless, backing: .buffered, defer: false)
         window.isOpaque = false
         window.backgroundColor = .clear
@@ -72,7 +77,7 @@ private final class SelectionView: NSView {
     private var dragMode: DragMode = .new
     private enum DragMode { case new, move, resize(Int) }
 
-    override init(frame frameRect: NSRect) {
+    init(frame frameRect: NSRect, safeTopInset: CGFloat) {
         super.init(frame: frameRect)
         titleLabel.font = .systemFont(ofSize: 14, weight: .semibold)
         noteLabel.font = .systemFont(ofSize: 12)
@@ -99,7 +104,7 @@ private final class SelectionView: NSView {
         let preferredWidth = instructions.widthAnchor.constraint(equalToConstant: 740)
         preferredWidth.priority = .defaultHigh
         NSLayoutConstraint.activate([
-            instructions.topAnchor.constraint(equalTo: topAnchor, constant: 28),
+            instructions.topAnchor.constraint(equalTo: topAnchor, constant: safeTopInset + 16),
             instructions.centerXAnchor.constraint(equalTo: centerXAnchor),
             instructions.widthAnchor.constraint(lessThanOrEqualTo: widthAnchor, constant: -32),
             preferredWidth,

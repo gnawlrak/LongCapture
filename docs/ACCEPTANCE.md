@@ -7,7 +7,7 @@
 - 捕获边界分片：`swift test`，3 项通过（Retina/负坐标、跨屏拒绝、BGRA 复制与所有权）。
 - 拼接/会话分片：`swift test`，28 项通过。
 - 权限增量：8 项注入测试通过，覆盖不主动弹窗、已授权不重复申请、申请成功/拒绝、重启前仍阻止采集、外部允许/撤销、防重入及系统设置链接失败；权限分片时 `swift test` 共 36 项通过，累计位移修复后当前共 54 项通过。
-- 完整 App/XCTest：`./scripts/test.sh` 当前 76 项通过，0 失败（玻璃界面改版前为 67 项）。包含真实 Vision 与 CoreText 的逐像素测试，不只检查图片高度；也包含原生 `NSWindow.performClose`、丢弃按钮和拒绝丢弃后的继续保存。
+- 完整 App/XCTest：`./scripts/test.sh` 当前 78 项通过，0 失败（玻璃界面改版前为 67 项，菜单栏避让修复前为 76 项）。包含真实 Vision 与 CoreText 的逐像素测试，不只检查图片高度；也包含原生 `NSWindow.performClose`、丢弃按钮和拒绝丢弃后的继续保存。
 - 设置权限区的原生离屏渲染已检查，浅色/深色下状态、申请/打开设置/检查按钮完整显示；这不代表系统授权弹窗已实测。
 - `./scripts/build.sh`：Release 构建成功，原生 arm64 可执行文件；应用包包含 MIT notice。
 - `codesign --verify --deep --strict`：签名完整性通过。2026-10-28 起改为本机现有 Apple Development 证书签名，不再以 ad-hoc 交付；没有公证或商店签名。
@@ -66,6 +66,14 @@
 - 更新前的正式版保存在 `build/Backups/20261028-124748-liquid-glass/Release.app`，实际被替换的安装包另存为同目录的 `InstalledRelease.app`。旧 PID 77430 正常退出并确认结束后才安装，新 PID 40731 从默认正式版路径完成启动；新旧证书身份要求逐字相同，没有强制退出或修改 TCC。
 - 日志：`build/glass-ui-red.log`、`build/glass-ui-regression.log`、`build/glass-ui-action-label-red.log`、`build/glass-ui-xcode-tests-final.log`、`build/glass-ui-render.log`、`build/glass-ui-composited.log`、`build/glass-ui-release-build.log`、`build/glass-ui-signing-regression.log`、`build/glass-ui-normal-quit.log`、`build/glass-ui-relaunch.log`。样张：`build/GlassUI/`，`*-composited.png` 为包含生成背景的系统合成结果；默认 PNG 仅是离屏布局，不应作为完整材质效果的证据。
 
+## 框选提示条菜单栏避让（2026-10-28）
+
+- 用户照片中的框选提示条压进菜单栏。读取当前屏幕：顶部 `visibleFrame` 避让为 33 点，刘海安全区为 32 点，旧提示条固定下移 28 点。先加入实际屏幕布局测试，浅色/深色均失败，测得提示条顶边压入菜单栏约 5 点。
+- 改为取菜单栏避让与刘海安全区的较大值，再留 16 点间距；不移动/缩小整屏选区，不改拼接、权限和结果流程。新增实际屏幕浅深色检查，以及 0/24/33/64 点顶部避让、原点/负坐标屏幕的注入布局测试。
+- 相关 UI/结果流程 24 项和完整 XCTest 78 项全部通过；正式版构建、图标、严格签名及签名身份内容变更回归通过。已查看浅/深色选区布局和仅包含自建窗口的系统合成样张；这不等同于正式版真实页面采集或自动隐藏菜单栏的人工验收。
+- 更新前 App 备份在 `build/Backups/20261028-130657-menu-safe-area/Release.app`；被替换安装包另存为同目录 `InstalledRelease.app`。旧 PID 40731 正常退出并确认结束后才替换，新 PID 71611 从默认路径完成启动。新旧签名身份要求逐字一致，没有强制结束进程或修改 TCC。
+- 日志：`build/menu-safe-area-red.log`、`build/menu-safe-area-regression.log`、`build/menu-safe-area-full-tests.log`、`build/menu-safe-area-render.log`、`build/menu-safe-area-composited.log`、`build/menu-safe-area-release-build.log`、`build/menu-safe-area-signing.log`、`build/menu-safe-area-normal-quit.log`、`build/menu-safe-area-install-relaunch.log`。照片仅在忽略的 `build/` 内用于定位，不入 Git。
+
 ## 尚未验证
 
 以下条目**未完成，不标为通过**：
@@ -99,3 +107,4 @@ open -a TextEdit build/Fixtures/LongCapture-test.txt
 9. 仅在用户明确确认后，对指定微信非敏感测试会话重复向上、回看、恢复和导出检查；不得以自动化测试代替该项。
 10. 对有底部跳转箭头/渐变的非敏感测试页面，慢滚后再回看并恢复增长，检查箭头与遮罩不在图像内部重复。向上采集时检查顶部边缘同类现象；末端仍被控件盖住的内容不应被伪造补出。
 11. 连续滚动至少 15 个视口，夹杂接近静止的慢滚、暂停和反向回看，再恢复原方向。对原来固定暂停的页面位置复测；若仍暂停，记录工具条的已确认高度及悬停显示的具体原因，不把通用恢复文案当成长度上限。
+12. 在刘海屏/普通屏进入框选，提示条应在菜单栏和刘海下方至少留 16 点空隙，两个操作按钮完整可点；切换浅/深色及菜单栏自动隐藏后重试。框选、移动、调整与回车开始的坐标不能因避让偏移；多显示器仍需设备实测。

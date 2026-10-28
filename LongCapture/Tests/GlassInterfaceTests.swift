@@ -59,6 +59,49 @@ final class GlassInterfaceTests: XCTestCase {
     }
 
     @MainActor
+    func testSelectionInstructionsClearSystemMenuBarAndNotch() throws {
+        _ = NSApplication.shared
+        let screen = try XCTUnwrap(NSScreen.main)
+        let safeTop = min(screen.visibleFrame.maxY, screen.frame.maxY - screen.safeAreaInsets.top)
+        for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+            let overlay = SelectionOverlay(displayRect: screen.frame, onBegin: { _ in }, onCancel: {})
+            defer { overlay.close() }
+            let window = try XCTUnwrap(overlay.window)
+            window.appearance = NSAppearance(named: appearance)
+            let root = try XCTUnwrap(window.contentView)
+            root.layoutSubtreeIfNeeded()
+            let glass = try XCTUnwrap(glassViews(in: root).first)
+            let frame = window.convertToScreen(root.convert(glass.bounds, from: glass))
+            XCTAssertLessThanOrEqual(frame.maxY, safeTop - 16 + 0.5,
+                                     "Selection guidance must leave 16pt below both menu bar and notch in \(appearance)")
+            XCTAssertEqual(root.bounds.size, screen.frame.size, "Keep full-display selection coordinates unchanged")
+        }
+    }
+
+    @MainActor
+    func testSelectionGuidanceInsetsStayDisplayLocalWithoutShrinkingSelection() throws {
+        _ = NSApplication.shared
+        for origin in [CGPoint.zero, CGPoint(x: -1512, y: 240)] {
+            let display = CGRect(origin: origin, size: CGSize(width: 1512, height: 982))
+            for topInset: CGFloat in [0, 24, 33, 64] {
+                let overlay = SelectionOverlay(displayRect: display, safeTopInset: topInset,
+                                               onBegin: { _ in }, onCancel: {})
+                defer { overlay.close() }
+                let root = try XCTUnwrap(overlay.window?.contentView)
+                root.layoutSubtreeIfNeeded()
+                let glass = try XCTUnwrap(glassViews(in: root).first)
+                let frame = root.convert(glass.bounds, from: glass)
+                XCTAssertEqual(frame.maxY, display.height - topInset - 16, accuracy: 0.5)
+                XCTAssertEqual(frame.midX, display.width / 2, accuracy: 0.5)
+                XCTAssertEqual(root.bounds, CGRect(origin: .zero, size: display.size))
+                XCTAssertTrue(root.bounds.contains(frame))
+                XCTAssertNotNil(button("开始截图", in: root))
+                XCTAssertNotNil(button("取消", in: root))
+            }
+        }
+    }
+
+    @MainActor
     func testCaptureGlassToolbarPreservesClickThroughAndCompletionActions() throws {
         _ = NSApplication.shared
         let existing = Set(NSApp.windows.map(ObjectIdentifier.init))

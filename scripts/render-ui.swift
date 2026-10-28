@@ -47,7 +47,7 @@ struct RenderInterface {
             preview.closeAfterResolution()
 
             let display = CGRect(x: 0, y: 0, width: 1280, height: 800)
-            let selection = SelectionOverlay(displayRect: display, onBegin: { _ in }, onCancel: {})
+            let selection = SelectionOverlay(displayRect: display, safeTopInset: 33, onBegin: { _ in }, onCancel: {})
             let view = selection.window!.contentView!
             let number = selection.window!.windowNumber
             for (type, point) in [(NSEvent.EventType.leftMouseDown, CGPoint(x: 180, y: 140)),
