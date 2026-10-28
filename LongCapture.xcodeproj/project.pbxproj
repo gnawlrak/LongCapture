@@ -1,5 +1,9 @@
 // !$*UTF8*$!
 { archiveVersion = 1; classes = {}; objectVersion = 77; objects = {
+		F026_r = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "LongCapture/Source/App/LoginItemSettings.swift"; sourceTree = SOURCE_ROOT; };
+		F026_s = {isa = PBXBuildFile; fileRef = F026_r; };
+		F027_r = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "LongCapture/Tests/LoginItemSettingsTests.swift"; sourceTree = SOURCE_ROOT; };
+		F027_s = {isa = PBXBuildFile; fileRef = F027_r; };
 		F024_r = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "LongCapture/Source/UI/NativeGlass.swift"; sourceTree = SOURCE_ROOT; };
 		F024_s = {isa = PBXBuildFile; fileRef = F024_r; };
 		F025_r = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "LongCapture/Tests/GlassInterfaceTests.swift"; sourceTree = SOURCE_ROOT; };
@@ -53,6 +57,7 @@
 		LongCaptureTests.xctest /* LongCaptureTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; path = LongCaptureTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		LongCapture.app /* LongCapture.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; path = LongCapture.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		LongCaptureTests /* LongCaptureTests */ = {isa = PBXGroup; children = (
+			F027_r,
 			F025_r,
 			F022_r,
 			F020_r,
@@ -62,6 +67,7 @@
 			Tests/StitchingTests.swift /* StitchingTests.swift */,
 		); path = Tests; sourceTree = "<group>"; };
 		LongCapture /* LongCapture */ = {isa = PBXGroup; children = (
+			F026_r,
 			F024_r,
 			F023_r,
 			F021_r,
@@ -83,6 +89,7 @@
 		LongCaptureTestsTarget = {isa = PBXNativeTarget; buildConfigurationList = LongCaptureTestsConfigList; buildPhases = (LongCaptureTestsSources,); buildRules = (); dependencies = (LongCaptureDependency,); name = LongCaptureTests; productName = LongCaptureTests; productReference = LongCaptureTests.xctest; productType = "com.apple.product-type.bundle.unit-test"; };
 		LongCaptureTarget = {isa = PBXNativeTarget; buildConfigurationList = LongCaptureConfigList; buildPhases = (LongCaptureSources, LongCaptureResources); buildRules = (); dependencies = (); name = LongCapture; productName = LongCapture; productReference = LongCapture.app; productType = "com.apple.product-type.application"; };
 		LongCaptureSources = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (
+			F026_s,
 			F024_s,
 			F021_s,
 			F017_s,
@@ -101,6 +108,7 @@
 			F012_s,
 		); runOnlyForDeploymentPostprocessing = 0; };
 		LongCaptureTestsSources = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (
+			F027_s,
 			F025_s,
 			F022_s,
 			F020_s,

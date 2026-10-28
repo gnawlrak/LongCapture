@@ -7,6 +7,7 @@ SOURCES=("$ROOT"/LongCapture/Source/UI/*.swift)
 xcrun swiftc -parse-as-library \
   "${SOURCES[@]}" \
   "$ROOT/LongCapture/Source/App/HotKey.swift" \
+  "$ROOT/LongCapture/Source/App/LoginItemSettings.swift" \
   "$ROOT/LongCapture/Source/Capture/ScreenCapturePermission.swift" \
   "$ROOT/LongCapture/Source/Core/Stitching.swift" \
   "$ROOT/LongCapture/Source/Core/ResultLifecycle.swift" \

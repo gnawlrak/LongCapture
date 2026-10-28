@@ -1,4 +1,5 @@
 import AppKit
+import ServiceManagement
 import XCTest
 @testable import LongCapture
 
@@ -182,13 +183,87 @@ final class GlassInterfaceTests: XCTestCase {
         var requests = 0
         let permission = ScreenCapturePermission(preflight: { false }, requestAccess: { requests += 1; return false })
         let controller = SettingsWindowController(saveDirectory: URL(fileURLWithPath: "/tmp"), shortcut: .defaultShortcut,
-                                                  permission: permission, onRequestPermission: { requests += 1 },
+                                                  permission: permission, loginItem: inactiveLoginItem(),
+                                                  onRequestPermission: { requests += 1 },
                                                   onOpenPermissionSettings: {}, onDirectoryChanged: { _ in },
                                                   onShortcutChanged: { _ in })
         defer { controller.close() }
         let root = try XCTUnwrap(controller.window?.contentView)
         XCTAssertFalse(glassViews(in: root).isEmpty, "Settings must share the native window material")
         XCTAssertEqual(requests, 0)
+    }
+
+    @MainActor
+    func testSettingsLoginSwitchStartsOffAndUsesTheSystemService() async throws {
+        _ = NSApplication.shared
+        var status = SMAppService.Status.notRegistered
+        var registrations = 0
+        var removals = 0
+        var registrationFails = false
+        let loginItem = LoginItemSettings(readStatus: { status }, register: {
+            registrations += 1
+            if registrationFails { throw NSError(domain: "LoginSwitchTest", code: 1) }
+            status = .enabled
+        }, unregister: {
+            removals += 1
+            status = .notRegistered
+        }, openSettings: { XCTFail("A toggle must not navigate automatically") })
+        let controller = SettingsWindowController(saveDirectory: URL(fileURLWithPath: "/tmp"), shortcut: .defaultShortcut,
+                                                  permission: ScreenCapturePermission(preflight: { false }),
+                                                  loginItem: loginItem,
+                                                  onRequestPermission: {}, onOpenPermissionSettings: {},
+                                                  onDirectoryChanged: { _ in }, onShortcutChanged: { _ in })
+        defer { controller.close() }
+        let root = try XCTUnwrap(controller.window?.contentView)
+        controller.window?.displayIfNeeded()
+        try await Task.sleep(nanoseconds: 150_000_000)
+        root.layoutSubtreeIfNeeded()
+        let toggle = try XCTUnwrap(descendants(in: root).compactMap { $0 as? NSSwitch }.first)
+        XCTAssertEqual(toggle.state, .off)
+        XCTAssertTrue(toggle.isEnabled)
+        XCTAssertFalse(toggle.isHiddenOrHasHiddenAncestor)
+        XCTAssertTrue(root.bounds.contains(root.convert(toggle.bounds, from: toggle)))
+        XCTAssertEqual(registrations, 0, "Presenting settings must never opt in")
+        XCTAssertEqual(removals, 0)
+        toggle.performClick(nil)
+        try await Task.sleep(nanoseconds: 150_000_000)
+        XCTAssertEqual(registrations, 1)
+        XCTAssertEqual(loginItem.status, .enabled)
+        XCTAssertEqual(toggle.state, .on)
+        toggle.performClick(nil)
+        try await Task.sleep(nanoseconds: 150_000_000)
+        XCTAssertEqual(removals, 1)
+        XCTAssertEqual(toggle.state, .off)
+        registrationFails = true
+        toggle.performClick(nil)
+        try await Task.sleep(nanoseconds: 150_000_000)
+        XCTAssertEqual(registrations, 2)
+        XCTAssertEqual(toggle.state, .off, "The native switch must revert when the system refuses registration")
+        XCTAssertNotNil(loginItem.errorMessage)
+    }
+
+    @MainActor
+    func testReopeningSettingsRefreshesExternalLoginItemChanges() async throws {
+        _ = NSApplication.shared
+        var status = SMAppService.Status.enabled
+        let loginItem = LoginItemSettings(readStatus: { status }, register: { XCTFail("No automatic registration") },
+                                         unregister: { XCTFail("No automatic removal") }, openSettings: {})
+        let controller = SettingsWindowController(saveDirectory: URL(fileURLWithPath: "/tmp"), shortcut: .defaultShortcut,
+                                                  permission: ScreenCapturePermission(preflight: { false }),
+                                                  loginItem: loginItem, onRequestPermission: {}, onOpenPermissionSettings: {},
+                                                  onDirectoryChanged: { _ in }, onShortcutChanged: { _ in })
+        defer { controller.close() }
+        for externalStatus in [SMAppService.Status.enabled, .requiresApproval, .notRegistered] {
+            status = externalStatus
+            controller.showWindow(nil)
+            try await Task.sleep(nanoseconds: 150_000_000)
+            let root = try XCTUnwrap(controller.window?.contentView)
+            root.layoutSubtreeIfNeeded()
+            let toggle = try XCTUnwrap(descendants(in: root).compactMap { $0 as? NSSwitch }.first)
+            XCTAssertEqual(loginItem.status, externalStatus)
+            XCTAssertEqual(toggle.state, externalStatus == .notRegistered ? .off : .on)
+            controller.close()
+        }
     }
 
     @MainActor
@@ -256,6 +331,12 @@ final class GlassInterfaceTests: XCTestCase {
     @MainActor
     private func descendants(in view: NSView) -> [NSView] {
         [view] + view.subviews.flatMap { descendants(in: $0) }
+    }
+
+    @MainActor
+    private func inactiveLoginItem() -> LoginItemSettings {
+        LoginItemSettings(readStatus: { .notRegistered }, register: { XCTFail("No automatic registration") },
+                          unregister: { XCTFail("No automatic removal") }, openSettings: {})
     }
 
     @MainActor

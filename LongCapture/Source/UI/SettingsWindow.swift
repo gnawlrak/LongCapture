@@ -6,16 +6,18 @@ import SwiftUI
 final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private let recorder: ShortcutRecordingState
     private let form: SettingsFormState
+    private let loginItem: LoginItemSettings
 
-    init(saveDirectory: URL, shortcut: HotKeyShortcut, permission: ScreenCapturePermission,
+    init(saveDirectory: URL, shortcut: HotKeyShortcut, permission: ScreenCapturePermission, loginItem: LoginItemSettings,
          onRequestPermission: @escaping () -> Void,
          onOpenPermissionSettings: @escaping () -> Void,
          onDirectoryChanged: @escaping (URL) -> Void,
          onShortcutChanged: @escaping (HotKeyShortcut) -> Void,
          onRecordingChanged: @escaping (Bool) -> Void = { _ in }) {
+        self.loginItem = loginItem
         recorder = ShortcutRecordingState(onRecordingChanged: onRecordingChanged)
         form = SettingsFormState(saveDirectory: saveDirectory, shortcut: shortcut)
-        let view = SettingsView(form: form, recorder: recorder, permission: permission,
+        let view = SettingsView(form: form, recorder: recorder, permission: permission, loginItem: loginItem,
                                 onRequestPermission: onRequestPermission,
                                 onOpenPermissionSettings: onOpenPermissionSettings,
                                 onDirectoryChanged: onDirectoryChanged, onShortcutChanged: onShortcutChanged)
@@ -54,6 +56,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     }
 
     override func showWindow(_ sender: Any?) {
+        loginItem.refresh()
         super.showWindow(sender)
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(sender)
@@ -67,6 +70,7 @@ private struct SettingsView: View {
     @ObservedObject var form: SettingsFormState
     @ObservedObject var recorder: ShortcutRecordingState
     @ObservedObject var permission: ScreenCapturePermission
+    @ObservedObject var loginItem: LoginItemSettings
     let onRequestPermission: () -> Void
     let onOpenPermissionSettings: () -> Void
     let onDirectoryChanged: (URL) -> Void
@@ -97,6 +101,37 @@ private struct SettingsView: View {
 
     private var settingsForm: some View {
         Form {
+            Section("通用") {
+                Toggle(isOn: Binding(get: { loginItem.isRegistered }, set: { enabled in
+                    recorder.cancel()
+                    loginItem.setEnabled(enabled)
+                })) {
+                    Text("登录时启动")
+                    Text("登录 Mac 后在菜单栏待命，不自动开始截图。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .toggleStyle(.switch)
+                .accessibilityLabel("登录时启动")
+                .disabled(loginItem.isChanging)
+                HStack {
+                    Text(loginItemStatus)
+                        .font(.caption)
+                        .foregroundStyle(loginItem.status == .requiresApproval ? Color.orange : Color.secondary)
+                    Spacer()
+                    GlassSettingsButton("打开登录项设置") {
+                        recorder.cancel()
+                        loginItem.openSystemSettings()
+                    }
+                    .controlSize(.small)
+                }
+                if let error = loginItem.errorMessage {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .textSelection(.enabled)
+                }
+            }
             Section("权限") {
                 LabeledContent("屏幕录制") {
                     Label(permission.isGranted ? "已允许" : "当前版本尚未获得权限",
@@ -175,6 +210,16 @@ private struct SettingsView: View {
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
         .background(.clear)
+    }
+
+    private var loginItemStatus: String {
+        switch loginItem.status {
+        case .notRegistered: return "未开启"
+        case .enabled: return "已开启"
+        case .requiresApproval: return "等待系统允许，请在登录项设置中开启。"
+        case .notFound: return "登录项不可用，请使用签名完整的应用。"
+        @unknown default: return "无法读取登录项状态，请检查系统设置。"
+        }
     }
 
     private func chooseDirectory() {

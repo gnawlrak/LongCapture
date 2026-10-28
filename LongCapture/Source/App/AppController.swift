@@ -16,6 +16,7 @@ final class AppController: NSObject {
     private var activeResult: SessionResult?
     private var saveTask: Task<URL, Error>?
     private let screenCapturePermission = ScreenCapturePermission()
+    private let loginItemSettings = LoginItemSettings()
     private var isPresentingPermissionAlert = false
     private var isRecordingShortcut = false
     private var observers: [(NotificationCenter, NSObjectProtocol)] = []
@@ -129,7 +130,7 @@ final class AppController: NSObject {
         screenCapturePermission.refresh()
         if let settings { settings.showWindow(nil); NSApp.activate(ignoringOtherApps: true); return }
         settings = SettingsWindowController(saveDirectory: saveDirectory, shortcut: shortcut,
-            permission: screenCapturePermission,
+            permission: screenCapturePermission, loginItem: loginItemSettings,
             onRequestPermission: { [weak self] in _ = self?.requestScreenCapturePermission() },
             onOpenPermissionSettings: { [weak self] in self?.openScreenCaptureSettings() },
             onDirectoryChanged: { [weak self] url in self?.setSaveDirectory(url) },
@@ -304,7 +305,10 @@ final class AppController: NSObject {
         let center = NotificationCenter.default
         observers.append((center, center.addObserver(forName: NSApplication.didBecomeActiveNotification,
             object: nil, queue: .main) { [weak self] _ in
-                Task { @MainActor in self?.screenCapturePermission.refresh() }
+                Task { @MainActor in
+                    self?.screenCapturePermission.refresh()
+                    self?.loginItemSettings.refresh()
+                }
             }))
         observers.append((center, center.addObserver(forName: NSApplication.didChangeScreenParametersNotification,
             object: nil, queue: .main) { [weak self] _ in

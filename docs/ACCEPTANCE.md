@@ -7,7 +7,7 @@
 - 捕获边界分片：`swift test`，3 项通过（Retina/负坐标、跨屏拒绝、BGRA 复制与所有权）。
 - 拼接/会话分片：`swift test`，28 项通过。
 - 权限增量：8 项注入测试通过，覆盖不主动弹窗、已授权不重复申请、申请成功/拒绝、重启前仍阻止采集、外部允许/撤销、防重入及系统设置链接失败；权限分片时 `swift test` 共 36 项通过，累计位移修复后当前共 54 项通过。
-- 完整 App/XCTest：`./scripts/test.sh` 当前 78 项通过，0 失败（玻璃界面改版前为 67 项，菜单栏避让修复前为 76 项）。包含真实 Vision 与 CoreText 的逐像素测试，不只检查图片高度；也包含原生 `NSWindow.performClose`、丢弃按钮和拒绝丢弃后的继续保存。
+- 完整 App/XCTest：`./scripts/test.sh` 当前 91 项通过，0 失败（登录项功能前为 78 项）。包含真实 Vision 与 CoreText 的逐像素测试，不只检查图片高度；也包含原生 `NSWindow.performClose`、丢弃按钮和拒绝丢弃后的继续保存。
 - 设置权限区的原生离屏渲染已检查，浅色/深色下状态、申请/打开设置/检查按钮完整显示；这不代表系统授权弹窗已实测。
 - `./scripts/build.sh`：Release 构建成功，原生 arm64 可执行文件；应用包包含 MIT notice。
 - `codesign --verify --deep --strict`：签名完整性通过。2026-10-28 起改为本机现有 Apple Development 证书签名，不再以 ad-hoc 交付；没有公证或商店签名。
@@ -74,6 +74,15 @@
 - 更新前 App 备份在 `build/Backups/20261028-130657-menu-safe-area/Release.app`；被替换安装包另存为同目录 `InstalledRelease.app`。旧 PID 40731 正常退出并确认结束后才替换，新 PID 71611 从默认路径完成启动。新旧签名身份要求逐字一致，没有强制结束进程或修改 TCC。
 - 日志：`build/menu-safe-area-red.log`、`build/menu-safe-area-regression.log`、`build/menu-safe-area-full-tests.log`、`build/menu-safe-area-render.log`、`build/menu-safe-area-composited.log`、`build/menu-safe-area-release-build.log`、`build/menu-safe-area-signing.log`、`build/menu-safe-area-normal-quit.log`、`build/menu-safe-area-install-relaunch.log`。照片仅在忽略的 `build/` 内用于定位，不入 Git。
 
+## 原生登录时启动（2026-10-28）
+
+- 新入口：菜单栏 → 设置 → 通用 → 登录时启动。使用 `SMAppService.mainApp`，默认不注册；只在用户操作开关时注册/取消。读取系统真实状态，不使用独立的 UserDefaults 开启标记，也不安装 LaunchAgent/脚本/helper。
+- 先加入缺少登录开关的失败检查；实现后修正离屏 SwiftUI 虚拟无障碍树的测试方式，改为实际操作底层原生 `NSSwitch`，不是通过放宽断言使其通过。开关测试检查默认关闭、展示无注册、点击开关调用注入服务、注册失败后复位，以及重新打开设置时读取外部更改。
+- 新增 11 项状态/操作注入测试及 2 项原生 UI 集成测试。覆盖幂等注册/取消、待批准但未启用、取消待批准、开启/关闭失败与重试、调用返回但状态未改变、部分成功后抛错、系统外部允许/撤销、不可用服务、防重入、显式打开登录项设置。相关 37 项及完整 XCTest 91 项全部通过。
+- 设置使用原有系统开关/玻璃外观；新增关闭、待批准、注册失败的浅/深色系统合成样张并检查，样张的登录项操作全部注入，不注册真实服务或打开系统设置。未改变启动时菜单栏待命、无普通主窗口和不自动申请录屏的行为。
+- 正式版独立构建、图标、严格签名与内容变更身份回归通过；签名身份与旧版逐字相同。旧包备份在 `build/Backups/20261028-204950-login-item/Release.app` 及同目录 `InstalledRelease.app`。替换时旧正式版没有运行；新版 PID 27364 从默认路径完成启动。没有强制结束进程、改动 TCC 或自动启用登录项。
+- 日志：`build/login-item-red.log`、`build/login-item-ui-probe.log`、`build/login-item-regression.log`、`build/login-item-full-tests.log`、`build/login-item-composited.log`、`build/login-item-release-build.log`、`build/login-item-signing.log`、`build/login-item-normal-quit.log`、`build/login-item-install-relaunch.log`。实际系统登录项注册/撤销及重新登录启动仍需用户选择开启后手动验收，不能以注入测试代替。
+
 ## 尚未验证
 
 以下条目**未完成，不标为通过**：
@@ -83,6 +92,7 @@
 - 微信向上聊天记录。没有用户确认的非敏感测试会话，未打开或采集用户聊天。
 - 真实多显示器设备、混合缩放、锁屏/拔屏时的系统通知和安全结束。已有坐标/中断注入测试，但不代替硬件实测。
 - 实际拒绝/允许屏幕录制、系统桌面文件夹访问提示及快捷键与其他应用冲突。已有注入失败/注册错误保底逻辑，未擅自修改系统授权。
+- 实际系统登录项批准/撤销及注销或重启后登录启动。未为了测试替用户开启登录项或中断登录会话；已验证注入状态、原生开关及发布包签名。
 
 ## 安全测试素材
 
@@ -108,3 +118,4 @@ open -a TextEdit build/Fixtures/LongCapture-test.txt
 10. 对有底部跳转箭头/渐变的非敏感测试页面，慢滚后再回看并恢复增长，检查箭头与遮罩不在图像内部重复。向上采集时检查顶部边缘同类现象；末端仍被控件盖住的内容不应被伪造补出。
 11. 连续滚动至少 15 个视口，夹杂接近静止的慢滚、暂停和反向回看，再恢复原方向。对原来固定暂停的页面位置复测；若仍暂停，记录工具条的已确认高度及悬停显示的具体原因，不把通用恢复文案当成长度上限。
 12. 在刘海屏/普通屏进入框选，提示条应在菜单栏和刘海下方至少留 16 点空隙，两个操作按钮完整可点；切换浅/深色及菜单栏自动隐藏后重试。框选、移动、调整与回车开始的坐标不能因避让偏移；多显示器仍需设备实测。
+13. 由用户选择开启「设置 → 通用 → 登录时启动」。待批准时点击「打开登录项设置」按系统提示允许，回到应用应刷新为已开启；下次自行注销/重新登录后确认只有菜单栏待命、没有自动截图或录屏弹窗。关闭后确认系统登录项移除，当前应用仍继续运行；在系统设置撤销后回到应用应显示待批准，不得自动重新注册。测试期间保留正式版路径不移动，不把调试版当作同一个登录项。

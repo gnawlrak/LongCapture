@@ -1,5 +1,6 @@
 import AppKit
 import ScreenCaptureKit
+import ServiceManagement
 
 /// Non-sensitive layout fixtures. Composited mode only captures this process's own windows.
 @main
@@ -33,12 +34,25 @@ struct RenderInterface {
         let image = sampleDocument()
         for (label, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
             app.appearance = NSAppearance(named: appearance)
+            var loginStatus = SMAppService.Status.notRegistered
+            let loginItem = LoginItemSettings(readStatus: { loginStatus }, register: {
+                throw NSError(domain: "RenderInterface", code: 5, userInfo: [
+                    NSLocalizedDescriptionKey: "测试：系统未允许注册登录项。"
+                ])
+            }, unregister: {}, openSettings: {})
             let settings = SettingsWindowController(saveDirectory: FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Desktop"),
                                                      shortcut: .defaultShortcut,
                                                      permission: ScreenCapturePermission(preflight: { true }),
+                                                     loginItem: loginItem,
                                                      onRequestPermission: {}, onOpenPermissionSettings: {},
                                                      onDirectoryChanged: { _ in }, onShortcutChanged: { _ in })
             try await render(settings.window!, name: "settings-\(label)", appearance: appearance, into: output)
+            loginStatus = .requiresApproval
+            loginItem.refresh()
+            try await render(settings.window!, name: "settings-login-approval-\(label)", appearance: appearance, into: output)
+            loginStatus = .notRegistered
+            loginItem.setEnabled(true)
+            try await render(settings.window!, name: "settings-login-error-\(label)", appearance: appearance, into: output)
             settings.close()
 
             let preview = PreviewWindowController(image: image, onSave: { output.appendingPathComponent("unused.png") },
@@ -81,7 +95,7 @@ struct RenderInterface {
             try await render(panel, name: "thumbnail-\(label)", appearance: appearance, into: output)
             thumbnail.finish()
         }
-        print("Rendered 12 \(composited ? "composited" : "offscreen") native interface fixtures into \(output.path)")
+        print("Rendered 16 \(composited ? "composited" : "offscreen") native interface fixtures into \(output.path)")
     }
 
     private static var composited: Bool { CommandLine.arguments.contains("--composited") }
