@@ -57,6 +57,22 @@ XCTest 覆盖真实 Vision 配准与注入位移的逐像素拼接、上下边�
 
 本机人工验收清单与当前验证记录见 `docs/ACCEPTANCE.md`；结构与约束见 `docs/ARCHITECTURE.md`。不要把合成帧/单元测试通过等同于 Safari、TextEdit 或微信实测通过。
 
+## 应用图标
+
+![长截图应用图标](LongCapture/Resources/Assets.xcassets/AppIcon.appiconset/icon_128x128@2x.png)
+
+海绿色圆角底，四角取景框与向下延展的纸带表达「截取之后还能继续增长」。图标直接由 Swift / Core Graphics 绘制，保留可修改、可重生成的源稿，不依赖生图服务或外部字体。
+
+`LongCapture/Resources/Assets.xcassets/AppIcon.appiconset` 包含 macOS 16–1024px 的全部 10 个标准槽位，透明外角；Debug 和 Release 都使用该图标。菜单栏仍使用原来的单色系统模板图标，保持明暗外观下的清晰度。
+
+```sh
+swift scripts/render-app-icon.swift
+swift scripts/test-app-icon.swift
+swift scripts/test-app-icon.swift build/Release/LongCapture.app
+```
+
+第一条命令重新绘制图标资源；后两条检查全部尺寸、透明边缘、图形覆盖率、工程配置，以及已构建 App 中的图标声明、`AppIcon.icns` 和 `Assets.car`。
+
 ## 边界
 
 仅支持单个显示器内的单个纵向滚动区域。没有自动滚动、录屏文件、OCR、标注、云服务、图库、商店上架、公证或自动更新。移动/缩放原窗口、无重叠快滚、完全重复图案、固定栏或持续动画可能需要恢复或重新采集。完全相同的周期画面与静止在视觉上无法区分，软件保守不增长，不猜测缺失内容。

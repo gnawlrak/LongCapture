@@ -47,6 +47,14 @@
 - 受限会话阶段曾阻止进程查询、签名私钥访问和 Git 写入，失败日志保留。用户恢复权限后，正式版独立构建、严格签名校验和签名变更回归均通过，新旧证书身份要求逐字相同，没有临时签名或修改 TCC。
 - 已正常退出旧 PID 49536，再通过已验证的副本和目录重命名替换正式版。新版从 `build/Release/LongCapture.app` 启动，PID 48090 已完成启动；恢复权限后优化核心复跑仍为 54 项通过。旧版备份在 `build/Backups/20261028-092932-matching-recovery/Release.app` 和该目录的 `InstalledRelease.app`。交付日志在 `build/matching-recovery-release-build-resumed.log`、`build/matching-recovery-signing-regression.log`、`build/matching-recovery-identity-comparison.log`、`build/matching-recovery-normal-quit.log`、`build/matching-recovery-install-relaunch.log`；这不代替原页面现场复测。
 
+## 应用图标（2026-10-28）
+
+- Swift/Core Graphics 直接绘制海绿色底、取景框和延展纸带；提供 16/32/128/256/512 点各 1x/2x 共 10 个 macOS 标准槽位，最大 1024px。已查看 512px、32px 和系统返回的 256px 图标，未使用截图内容或第三方图案。
+- 先运行图标检查确认缺少资源而失败，再补资产与工程配置。初稿 16px 阴影外溢被透明角测试捕获，修正阴影缩放后，所有尺寸、透明角、中心不透明、覆盖率和配置检查通过。
+- Debug/Release 均生成 `CFBundleIconName`、`CFBundleIconFile`、`AppIcon.icns` 和 `Assets.car`，已分别检查构建包；完整 Xcode XCTest 仍为 67 项通过、0 失败。默认构建脚本检查成品图标，测试脚本额外检查源资产。
+- 正式版已同证书构建并启动，签名身份与更新前一致，未重置录屏权限。旧版备份在 `build/Backups/20261028-101009-app-icon/Release.app`，旧 PID 51661 正常退出，新 PID 77430 完成启动。`NSWorkspace.icon(forFile:)` 返回新版图标，已渲染检查 `build/app-icon-system-preview.png`；不代表所有已打开的 Finder 窗口缓存都已人工核对。
+- 日志：`build/app-icon-red.log`、`build/app-icon-assets-tests.log`、`build/app-icon-xcode-tests.log`、`build/app-icon-debug-bundle-tests.log`、`build/app-icon-release-bundle-tests.log`、`build/app-icon-installed-release-build.log`、`build/app-icon-signing-regression.log`、`build/app-icon-normal-quit.log`、`build/app-icon-relaunch.log`。菜单栏单色模板与截图逻辑不变。
+
 ## 尚未验证
 
 以下条目**未完成，不标为通过**：
