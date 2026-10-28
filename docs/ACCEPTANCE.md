@@ -10,9 +10,18 @@
 - 完整 App/XCTest：`./scripts/test.sh`，49 项通过，0 失败。包含真实 Vision 与 CoreText 的逐像素测试，不只检查图片高度；也包含原生 `NSWindow.performClose`、丢弃按钮和拒绝丢弃后的继续保存。
 - 设置权限区的原生离屏渲染已检查，浅色/深色下状态、申请/打开设置/检查按钮完整显示；这不代表系统授权弹窗已实测。
 - `./scripts/build.sh`：Release 构建成功，原生 arm64 可执行文件；应用包包含 MIT notice。
-- `codesign --verify --deep --strict`：本地 ad-hoc 签名通过。没有公证或商店签名。
+- `codesign --verify --deep --strict`：签名完整性通过。2026-10-28 起改为本机现有 Apple Development 证书签名，不再以 ad-hoc 交付；没有公证或商店签名。
 - 已启动 Release 进程并确认持续运行；启动本身不申请屏幕权限，也不产生空白主窗口。这不是实际滚动截图验收。
 - 权限接口静态检查：唯一显式隐私请求为 `CGRequestScreenCaptureAccess`；无 AX、全局输入监视、麦克风、网络 API。音频采集关闭。测试宿主专用 entitlement 不作为 Release 授权交付。
+
+## 权限故障复查（2026-10-28）
+
+- 报告“已开权限仍显示未授权”后，在当时运行的旧 Debug 进程内检查：`CGPreflightScreenCaptureAccess() == false`，ScreenCaptureKit 仅枚举内容也返回 `SCStreamErrorDomain/-3801`，没有读取画面像素。重新启动同一旧构建后仍复现。说明当时确为系统拒绝当前进程，不只是界面没有刷新。
+- 旧 Debug 与 Release 使用同一个 bundle ID 和显示名，却有不同的 ad-hoc/CDHash 要求。未能读取受保护的 TCC 记录，因此不能断言用户具体勾选了哪一个历史条目；该身份混淆与不稳定问题已修复。
+- 新 Debug 名称/标识与 Release 分开，均通过证书签名检查。`./scripts/test-signing.sh` 验证内容变化后的临时副本仍符合原证书身份要求；旧 ad-hoc 构建按预期被检查脚本拒绝。
+- 修复后完整 XCTest 仍为 49 项通过，Release 构建及浅色/深色权限页渲染通过。实际重新授权与真实滚动截图仍需人工完成，不因签名检查通过而视为通过。
+
+故障复查日志：`build/permission-runtime-probe.log`、`build/permission-runtime-sck.log`、`build/permission-runtime-relaunch.log`、`build/signing-regression-red.log`、`build/signing-regression-green.log`、`build/signing-xcode-tests.log`、`build/signing-release-build.log`。修改前的两份 App 保存在 `build/Backups/20261028-permission-identity/`，仅供回退，不应重新混用授权。
 
 本地日志在 `build/capture-slice-tests.log`、`build/stitching-slice-tests.log`、`build/tests-final.log`、`build/permission-swift-tests.log`、`build/permission-xcode-tests.log` 和 `build/permission-release-build.log`；权限区离屏渲染在 `build/permission-settings-light.png`、`build/permission-settings-dark.png`，XCTest 结果包在 `build/DerivedData/Logs/Test/`。这些构建产物不入 Git。
 

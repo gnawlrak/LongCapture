@@ -22,7 +22,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         let hosting = NSHostingController(rootView: view)
         let window = NSWindow(contentViewController: hosting)
         window.title = "长截图设置"
-        window.setContentSize(NSSize(width: 530, height: 530))
+        window.setContentSize(NSSize(width: 530, height: 650))
         window.styleMask = [.titled, .closable]
         window.isReleasedWhenClosed = false
         window.center()
@@ -60,13 +60,23 @@ private struct SettingsView: View {
         Form {
             Section("权限") {
                 LabeledContent("屏幕录制") {
-                    Label(permission.isGranted ? "已允许" : "未允许或需重启",
+                    Label(permission.isGranted ? "已允许" : "当前版本尚未获得权限",
                           systemImage: permission.isGranted ? "checkmark.circle.fill" : "exclamationmark.circle")
                         .foregroundStyle(permission.isGranted ? Color.green : Color.secondary)
                 }
                 Text("读取所选区域以拼接长图，不采集音频。允许后若仍不可用，请退出并重新打开应用。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                LabeledContent("当前应用", value: Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ?? "长截图")
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(Bundle.main.bundleIdentifier ?? "未知应用标识")
+                    Text(Bundle.main.bundleURL.path)
+                        .lineLimit(3)
+                    Text("系统按应用身份授权，正式版与调试版分别授权。请确认允许的是上方这份应用。")
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
                 HStack {
                     if !permission.isGranted {
                         Button(permission.isRequesting ? "正在申请…" : "申请屏幕录制权限") {
@@ -124,7 +134,7 @@ private struct SettingsView: View {
                 .foregroundStyle(.secondary)
         }
         .formStyle(.grouped)
-        .frame(width: 530, height: 530)
+        .frame(width: 530, height: 650)
     }
 
     private func chooseDirectory() {

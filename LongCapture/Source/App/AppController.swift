@@ -163,7 +163,8 @@ final class AppController: NSObject {
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "需要屏幕录制权限"
-        alert.informativeText = "长截图需要读取所选区域才能拼接长图，不采集音频。请在系统设置 → 隐私与安全性 → 屏幕录制（或屏幕与系统录音录制）中允许「长截图」。若已允许但仍不可用，请退出并重新打开应用，然后再次开始截图。"
+        let applicationName = Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ?? "长截图"
+        alert.informativeText = "请在系统设置 → 隐私与安全性 → 屏幕录制（或屏幕与系统录音录制）中允许「\(applicationName)」。正式版与调试版分别授权；设置页会显示当前应用路径。若开关已打开仍不可用，请移除旧条目后重新添加当前应用，再退出重开。应用只读取所选区域，不采集音频。"
         alert.addButton(withTitle: "打开系统设置")
         alert.addButton(withTitle: "暂不")
         if alert.runModal() == .alertFirstButtonReturn { openScreenCaptureSettings() }

@@ -42,3 +42,14 @@ Contract: menu/settings expose permission status, an explicit request, a system 
 - `swift test`: 36 tests, 0 failures. `./scripts/test.sh`: 49 tests, 0 failures. Logs: `build/permission-tests-red.log`, `build/permission-tests-green.log`, `build/permission-swift-tests.log`, `build/permission-xcode-tests.log`.
 - Release build (`build/permission-release-build.log`) and strict signature verification pass. The previous Release app exited through its normal termination delegate; the new process runs with no normal startup window. System grant/deny interaction and real scrolling acceptance remain explicitly unverified.
 - Jev classification fell back to `keep_current` / `no_key`; deterministic tests, compiler and diff checks were used directly. Stop decision: permission-entry slice is complete; leave actual system authorization to the user.
+
+## 2026-10-28 - Slice 5: stable application identity for screen permission
+
+Contract: a normal rebuild under the same certificate must not change the app's designated identity. Debug/test-host and Release must not appear as the same application to TCC. Permission guidance must name and show the running bundle rather than merely trusting a same-named system toggle.
+
+- Reproduced in the running old Debug process: preflight false and ScreenCaptureKit content enumeration rejected with -3801, including after relaunch. No screen pixels were collected. The protected TCC database was unavailable; the exact historical grant record is not claimed as inspected.
+- Both previous builds had the same bundle ID/display name but different ad-hoc CDHash requirements. The new regression checker first rejected the old Release, then passed after using the already-installed Apple Development certificate. No certificate, keychain trust setting or TCC record was created/reset.
+- Split the Debug ID/display name from Release, added running-app identity/path to permission settings, and updated refusal guidance for stale entries. UI remained native; light/dark offscreen rendering checked at the new size.
+- Added build-time strict identity verification and a disposable-copy regression: modifying/re-signing content changes the hash while preserving the designated requirement. An initial test command supplied `codesign -R` without the literal `=` prefix; the test harness was corrected using the local man page, then passed. It never modifies or launches the shipped app copy.
+- `./scripts/test.sh`: 49 tests, 0 failures. `./scripts/build.sh`, Debug/Release identity verification, `./scripts/test-signing.sh`, shell syntax and diff checks pass. Previous app bundles were backed up before replacement; normal termination preserves active work instead of force-killing.
+- The old hash-bound permission may require the user to remove/re-add the new certificate-signed app once. A real new grant and subsequent scrolling capture remain unverified; no check is weakened or permission force-enabled to conceal that boundary.

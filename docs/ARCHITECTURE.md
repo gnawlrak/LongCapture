@@ -4,6 +4,7 @@
 
 - `AppController`: menu-bar entry, one unresolved result, settings persistence, save serialization and interruption notifications. It never processes screen pixels on the main actor.
 - `ScreenCapturePermission`: injectable preflight/request/settings adapters with observable current-process access and reentrant-request protection. Launch and refresh never prompt. Menu/settings expose explicit requests; capture requests access before selection, denial offers the system privacy pane, and app activation refreshes the status. The stream adapter defensively rechecks without prompting after selection.
+- App identity: certificate-signed Release and Debug have distinct bundle IDs and display names. Settings display the running bundle's identity and path, rather than assuming a same-named privacy toggle authorizes every build. Build verification rejects hash-bound ad-hoc designated requirements.
 - `SelectionOverlay`: one display, AppKit bottom-left global selection, local resize/move handles, Return/Escape. `CaptureGeometry` validates and pixel-aligns the rectangle, then converts to ScreenCaptureKit's display-local top-left coordinates.
 - `ScreenCaptureController`: injectable `CaptureFrameSource`; ~15 fps ScreenCaptureKit stream, sRGB BGRA, own-application/cursor/audio exclusion. A nonisolated output adapter accepts only complete frames and copies locked pixel buffers before releasing surfaces.
 - `FrameProcessingPipeline`: dedicated serial queue, one in-flight and at most one latest pending immutable image. Finish closes intake after source shutdown/barrier, drains the tail, then renders. Cancel drops pending frames. Main-actor session generation and state checks suppress late callbacks.
@@ -29,4 +30,4 @@
 
 ## Build
 
-The shared Xcode scheme contains an App target (macOS 14) and a hosted XCTest target. Tests skip production status-item/hotkey initialization. Debug uses the current architecture; `scripts/build.sh` produces an optimized, ad-hoc-signed local app. Test-only code and entitlements do not enter the Release app.
+The shared Xcode scheme contains an App target (macOS 14) and a hosted XCTest target. Tests skip production status-item/hotkey initialization. Debug uses the current architecture and the `.debug` bundle ID; `scripts/build.sh` produces an optimized, Apple Development-signed local app using the configured team. Test-only code and entitlements do not enter the Release app. `scripts/test-signing.sh` mutates and re-signs a disposable, never-launched copy to verify that the designated requirement stays stable across content changes; this does not prove an actual TCC grant.
