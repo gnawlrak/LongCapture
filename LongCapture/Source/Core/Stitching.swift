@@ -156,7 +156,7 @@ struct PixelImage {
         return PixelImage(width: height, height: width, pixels: output)
     }
 
-    private init(width: Int, height: Int, pixels: Data) {
+    fileprivate init(width: Int, height: Int, pixels: Data) {
         self.width = width; self.height = height; self.pixels = pixels
     }
 
@@ -282,6 +282,56 @@ struct StitchState {
         strips.append(Strip(origin: origin, rows: count, pixels: frame.pixels.subdata(in: start..<end)))
     }
 
+    /// Only the viewport position changes: relocation cannot append, erase, or reverse the document.
+    mutating func relocate(to position: Int) -> Bool {
+        guard position >= upperBound, position <= lowerBound - frameHeight else { return false }
+        self.position = position
+        return true
+    }
+
+    func recoveryViewport(at position: Int) -> PixelImage? {
+        guard position >= upperBound, position <= lowerBound - frameHeight else { return nil }
+        var pixels = Data(count: width * frameHeight * 4)
+        pixels.withUnsafeMutableBytes { destination in
+            visitRegions { source, sourceRow, origin, count in
+                let start = max(position, origin), end = min(position + frameHeight, origin + count)
+                guard start < end else { return }
+                _ = source.withUnsafeBytes { bytes in
+                    memcpy(destination.baseAddress!.advanced(by: (start - position) * width * 4),
+                           bytes.baseAddress!.advanced(by: (sourceRow + start - origin) * width * 4),
+                           (end - start) * width * 4)
+                }
+            }
+        }
+        return PixelImage(width: width, height: frameHeight, pixels: pixels)
+    }
+
+    func makeRecoveryIndex() -> RecoveryIndex {
+        let columns = (0..<min(32, width - 1)).map { $0 * (width - 1) / min(32, width - 1) }
+        var pixels = Data(count: columns.count * imageHeight * 4)
+        pixels.withUnsafeMutableBytes { destination in
+            let output = destination.bindMemory(to: UInt32.self)
+            visitRegions { source, sourceRow, origin, count in
+                source.withUnsafeBytes { bytes in
+                    let input = bytes.bindMemory(to: UInt32.self)
+                    for row in 0..<count {
+                        for (index, x) in columns.enumerated() {
+                            output[(origin - upperBound + row) * columns.count + index] = input[(sourceRow + row) * width + x]
+                        }
+                    }
+                }
+            }
+        }
+        return RecoveryIndex(origin: upperBound, width: width, height: imageHeight, columns: columns, pixels: pixels)
+    }
+
+    private func visitRegions(_ body: (Data, Int, Int, Int) -> Void) {
+        for strip in strips { body(strip.pixels, 0, strip.origin, strip.rows) }
+        if let frontier {
+            body(frontier.frame.pixels, frontier.start - frontier.position, frontier.start, frontier.end - frontier.start)
+        }
+    }
+
     func render() throws -> CGImage {
         guard imageHeight > 0 else { throw StitchError.noContent }
         var output = Data(count: width * imageHeight * 4)
@@ -301,6 +351,80 @@ struct StitchState {
             }
         }
         return try PixelImage.makeImage(width: width, height: imageHeight, pixels: output)
+    }
+}
+
+/// Sparse columns locate a viewport without rendering or retaining a second full-resolution long image.
+/// The index only proposes positions; full viewport registration and ambiguity checks authorize recovery.
+struct RecoveryIndex {
+    let origin: Int
+    let width: Int
+    let height: Int
+    let columns: [Int]
+    let pixels: Data
+    var retainedPixelBytes: Int { pixels.count }
+
+    func locate(_ frame: PixelImage, viewport: (Int) -> PixelImage?) -> Int? {
+        guard frame.width == width, frame.height <= height, !columns.isEmpty else { return nil }
+        struct Point { let column: Int; let y: Int }
+        let points: [Point] = frame.pixels.withUnsafeBytes { raw in
+            let bytes = raw.bindMemory(to: UInt8.self)
+            var points: [Point] = []
+            let margin = frame.height / 6
+            for y in stride(from: margin, to: frame.height - margin - 2, by: max(1, frame.height / 128)) {
+                for (index, x) in columns.enumerated() {
+                    let p = y * frame.bytesPerRow + x * 4
+                    var edge = 0
+                    for c in 0..<3 {
+                        edge += abs(Int(bytes[p + c]) - Int(bytes[p + 4 + c]))
+                        edge += abs(Int(bytes[p + c]) - Int(bytes[p + frame.bytesPerRow + c]))
+                    }
+                    if edge > 48 { points.append(Point(column: index, y: y)) }
+                }
+            }
+            return points.count <= 128 ? points : (0..<128).map { points[$0 * points.count / 128] }
+        }
+        guard points.count >= 24 else { return nil }
+        let candidates: [(position: Int, error: Int)] = pixels.withUnsafeBytes { referenceRaw in
+            frame.pixels.withUnsafeBytes { currentRaw in
+                let reference = referenceRaw.bindMemory(to: UInt8.self), current = currentRaw.bindMemory(to: UInt8.self)
+                var candidates: [(Int, Int)] = []
+                let maximumError = Int(0.028 * Double(points.count * 765))
+                let maximumBad = Int(0.12 * Double(points.count))
+                for top in 0...(height - frame.height) {
+                    var total = 0, bad = 0
+                    for point in points {
+                        let p = ((top + point.y) * columns.count + point.column) * 4
+                        let q = point.y * frame.bytesPerRow + columns[point.column] * 4
+                        var worst = 0
+                        for c in 0..<3 {
+                            let error = abs(Int(reference[p + c]) - Int(current[q + c]))
+                            total += error; worst = max(worst, error)
+                        }
+                        if worst > 32 { bad += 1 }
+                        if total > maximumError || bad > maximumBad { break }
+                    }
+                    if total <= maximumError && bad <= maximumBad { candidates.append((origin + top, total)) }
+                    // Too many plausible positions is ambiguity, not permission to choose the first.
+                    if candidates.count > 128 { return [] }
+                }
+                return candidates.sorted { $0.1 < $1.1 }
+            }
+        }
+        let estimator = VisionOffsetEstimator()
+        let validator = OverlapValidator()
+        var found: Int?
+        for candidate in candidates {
+            let verified = autoreleasepool {
+                guard let expected = viewport(candidate.position),
+                      validator.score(expected, frame, shift: 0).isReliable else { return false }
+                return estimator.estimate(previous: expected, current: frame).shift == 0
+            }
+            guard verified else { continue }
+            if let found, abs(found - candidate.position) > 2 { return nil }
+            if found == nil { found = candidate.position }
+        }
+        return found
     }
 }
 

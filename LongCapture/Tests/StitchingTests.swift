@@ -28,6 +28,142 @@ private final class KnownFramePositionEstimator: OffsetEstimating {
 }
 
 final class StitchingTests: XCTestCase {
+    func testHorizontalRecoveryCanRelocateWithinEarlierConfirmedContentWithoutExactAnchor() throws {
+        let canvas = HorizontalTextTestCanvas(width: 12_000)
+        for axis in [CaptureAxis.horizontal, .automatic] {
+            for sign in [1, -1] {
+                let start = sign == 1 ? 500 : 4_500
+                let sut = StitchingController(axis: axis)
+                for offset in stride(from: 0, through: 2_400, by: 200) {
+                    XCTAssertNotEqual(sut.accept(canvas.frame(at: start + sign * offset, width: 800, height: 80)).action,
+                                      .needsRecovery)
+                }
+                XCTAssertEqual(sut.accept(canvas.frame(at: sign == 1 ? 8_000 : 9_000, width: 800, height: 80)).action,
+                               .needsRecovery)
+                let recovered = sut.accept(canvas.frame(at: start + sign * 137, width: 800, height: 80))
+                XCTAssertEqual(recovered.action, .stayed)
+                XCTAssertEqual(recovered.progress, .recovered)
+                XCTAssertNil(recovered.referenceImage)
+                XCTAssertEqual(recovered.height, 3_200)
+                for offset in stride(from: 337, through: 2_737, by: 200) {
+                    XCTAssertNotEqual(sut.accept(canvas.frame(at: start + sign * offset, width: 800, height: 80)).action,
+                                      .needsRecovery)
+                }
+                let result = try sut.finish()
+                XCTAssertFalse(result.incomplete)
+                try assertPixelsEqual(result.image,
+                    canvas.frame(at: sign == 1 ? start : start - 2_737, width: 3_537, height: 80))
+                XCTAssertEqual(sut.retainedPixelBytes, 0)
+            }
+        }
+    }
+
+    func testRelocationNeverAddsUnseenContentAndUnrecoveredFinishRetainsConfirmedPixels() throws {
+        let canvas = HorizontalTextTestCanvas(width: 12_000)
+        let sut = StitchingController(axis: .horizontal)
+        for x in stride(from: 500, through: 2_900, by: 200) {
+            _ = sut.accept(canvas.frame(at: x, width: 800, height: 80))
+        }
+        for x in [8_000, 8_200, 8_400] {
+            let update = sut.accept(canvas.frame(at: x, width: 800, height: 80))
+            XCTAssertEqual(update.action, .needsRecovery)
+            XCTAssertEqual(update.height, 3_200)
+            XCTAssertNotNil(update.referenceImage)
+            XCTAssertLessThanOrEqual(sut.retainedPixelBytes, 80 * 3_200 * 4 + 3 * 80 * 800 * 4)
+        }
+        let result = try sut.finish()
+        XCTAssertTrue(result.incomplete)
+        try assertPixelsEqual(result.image, canvas.frame(at: 500, width: 3_200, height: 80))
+    }
+
+    func testRecoveryRejectsDistantRepeatedPositionsAndCanStillReturnToLastAnchor() throws {
+        let canvas = TestCanvas(width: 80, height: 12_000, repeatedPeriod: 3_200)
+        let estimator = ScriptedEstimator(Array(repeating: Optional(200), count: 20) + [nil, nil, -150])
+        let sut = StitchingController(estimator: estimator, axis: .horizontal)
+        func frame(_ y: Int) throws -> CGImage { try PixelImage(canvas.frame(at: y, height: 800)).transposed().cgImage() }
+        for y in stride(from: 0, through: 4_000, by: 200) { _ = sut.accept(try frame(y)) }
+        XCTAssertEqual(sut.accept(TestCanvas.blank(width: 800, height: 80)).action, .needsRecovery)
+        // Both 137 and 3337 are fully confirmed and pixel-identical. Do not guess the position.
+        let ambiguous = sut.accept(try frame(137))
+        XCTAssertEqual(ambiguous.action, .needsRecovery)
+        XCTAssertEqual(ambiguous.height, 4_800)
+        XCTAssertNotNil(ambiguous.referenceImage)
+        let recovered = sut.accept(try frame(3_850))
+        XCTAssertEqual(recovered.action, .stayed)
+        XCTAssertEqual(recovered.progress, .recovered)
+        try assertPixelsEqual(sut.finish().image, PixelImage(canvas.frame(at: 0, height: 4_800)).transposed().cgImage())
+    }
+
+    func testRelocationRejectsCrossAxisChangesAndCancelReleasesItsIndex() throws {
+        let canvas = HorizontalTextTestCanvas(width: 12_000)
+        let sut = StitchingController(axis: .horizontal)
+        for x in stride(from: 500, through: 2_900, by: 200) {
+            _ = sut.accept(canvas.frame(at: x, width: 800, height: 80))
+        }
+        let changed = try XCTUnwrap(canvas.image.cropping(to: CGRect(x: 637, y: 8, width: 800, height: 80)))
+        XCTAssertEqual(sut.accept(changed).action, .needsRecovery)
+        XCTAssertEqual(sut.accept(canvas.frame(at: 637, width: 800, height: 80)).progress, .recovered)
+        XCTAssertEqual(sut.accept(canvas.frame(at: 8_000, width: 800, height: 80)).action, .needsRecovery)
+        sut.cancel()
+        XCTAssertEqual(sut.retainedPixelBytes, 0)
+        XCTAssertEqual(sut.accept(changed).action, .rejected)
+        XCTAssertThrowsError(try sut.finish())
+    }
+
+    func testRecoveryViewportAndRelocationPreserveBothDocumentBoundsAndDirection() throws {
+        let canvas = TestCanvas(width: 120, height: 3_000)
+        for sign in [1, -1] {
+            let start = sign == 1 ? 500 : 1_500
+            var state = try StitchState(first: PixelImage(canvas.frame(at: start, height: 300)), limits: .default)
+            for offset in stride(from: 100, through: 600, by: 100) {
+                _ = state.accept(try PixelImage(canvas.frame(at: start + sign * offset, height: 300)), shift: sign * 100)
+            }
+            let top = state.upperBound, bottom = state.lowerBound, direction = state.direction
+            let oldPosition = sign == 1 ? 137 : -137
+            let viewport = try XCTUnwrap(state.recoveryViewport(at: oldPosition))
+            try assertPixelsEqual(viewport.cgImage(), canvas.frame(at: start + oldPosition, height: 300))
+            XCTAssertTrue(state.relocate(to: oldPosition))
+            XCTAssertEqual(state.position, oldPosition)
+            XCTAssertFalse(state.relocate(to: top - 1))
+            XCTAssertFalse(state.relocate(to: bottom - 299))
+            XCTAssertNil(state.recoveryViewport(at: top - 1))
+            XCTAssertEqual(state.upperBound, top)
+            XCTAssertEqual(state.lowerBound, bottom)
+            XCTAssertEqual(state.direction, direction)
+            try assertPixelsEqual(state.render(), canvas.frame(at: start + top, height: 900))
+        }
+    }
+
+    func testHorizontalRelocationAfterRolloverKeepsPageOriginsAndSubsequentGrowth() throws {
+        let canvas = HorizontalTextTestCanvas(width: 12_000)
+        for sign in [1, -1] {
+            let start = sign == 1 ? 500 : 6_000
+            let sut = StitchingController(limits: StitchLimits(maximumPixels: 80 * 3_200, maximumHeight: 3_200),
+                                          continuesAtLimit: true, axis: .automatic)
+            for offset in stride(from: 0, through: 4_400, by: 200) {
+                XCTAssertNotEqual(sut.accept(canvas.frame(at: start + sign * offset, width: 800, height: 80)).action,
+                                  .needsRecovery)
+            }
+            XCTAssertEqual(sut.accept(canvas.frame(at: 10_000, width: 800, height: 80)).action, .needsRecovery)
+            let recovered = sut.accept(canvas.frame(at: start + sign * 2_537, width: 800, height: 80))
+            XCTAssertEqual(recovered.progress, .recovered)
+            XCTAssertEqual(recovered.pageCount, 2)
+            for offset in stride(from: 2_737, through: 4_737, by: 200) {
+                XCTAssertNotEqual(sut.accept(canvas.frame(at: start + sign * offset, width: 800, height: 80)).action,
+                                  .needsRecovery)
+            }
+            let result = try sut.finish()
+            XCTAssertFalse(result.incomplete)
+            XCTAssertEqual(result.document.pages.count, 2)
+            let origins = sign == 1 ? [0, 2_400] : [-4_737, -2_400]
+            let lengths = sign == 1 ? [3_200, 3_137] : [3_137, 3_200]
+            for index in 0..<2 {
+                try assertPixelsEqual(result.document.pages[index].load(),
+                    canvas.frame(at: start + origins[index], width: lengths[index], height: 80))
+            }
+        }
+    }
+
     func testRealVisionShortHorizontalTextSelectionsMatchAcceptedGeometry() throws {
         let canvas = HorizontalTextTestCanvas()
         for height in [64, 65, 80, 95, 96, 128] {

@@ -204,6 +204,46 @@ final class SessionCoordinatorTests: XCTestCase {
         }
     }
 
+    func testHorizontalSessionRecoversAtEarlierConfirmedContentAndDrainsTail() async throws {
+        let canvas = HorizontalTextTestCanvas(width: 12_000)
+        let source = FakeFrameSource()
+        let completed = expectation(description: "recovered horizontal result")
+        var nextUpdate: XCTestExpectation?
+        var latest: StitchUpdate?
+        let session = SessionCoordinator(sourceFactory: { _, onFrame, _ in
+            source.onFrame = onFrame
+            return source
+        }, onResult: { result in
+            XCTAssertFalse(result.incomplete)
+            XCTAssertEqual(result.document.axis, .horizontal)
+            do { try assertPixelsEqual(result.image, canvas.frame(at: 500, width: 3_537, height: 80)) }
+            catch { XCTFail(error.localizedDescription) }
+            completed.fulfill()
+        }, onError: { XCTFail($0.localizedDescription) }, onUpdate: { update in
+            latest = update
+            nextUpdate?.fulfill()
+        })
+        session.prepareForSelection()
+        await session.beginCapture(geometry: try geometry())
+        let positions = Array(stride(from: 500, through: 2_900, by: 200)) + [8_000, 637] +
+            Array(stride(from: 837, through: 3_037, by: 200))
+        for x in positions {
+            nextUpdate = expectation(description: "horizontal frame \(x)")
+            source.onFrame?(canvas.frame(at: x, width: 800, height: 80))
+            await fulfillment(of: [try XCTUnwrap(nextUpdate)], timeout: 4)
+            nextUpdate = nil
+            if x == 8_000 { XCTAssertEqual(latest?.action, .needsRecovery) }
+            if x == 637 { XCTAssertEqual(latest?.progress, .recovered) }
+            XCTAssertEqual(session.state, .capturing)
+            XCTAssertFalse(source.stopped)
+        }
+        source.onFrame?(canvas.frame(at: 3_237, width: 800, height: 80))
+        await session.complete()
+        await fulfillment(of: [completed], timeout: 4)
+        XCTAssertEqual(session.state, .result)
+        XCTAssertTrue(source.stopped)
+    }
+
     private func geometry() throws -> CaptureGeometry {
         try CaptureGeometry(displayID: 1, displayFrame: CGRect(x: 0, y: 0, width: 1000, height: 800),
                             selection: CGRect(x: 10, y: 10, width: 400, height: 300), scale: 1)

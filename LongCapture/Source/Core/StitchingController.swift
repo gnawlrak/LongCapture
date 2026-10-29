@@ -17,13 +17,15 @@ final class StitchingController {
     private var stopped = false
     private var recoveryMessage: String?
     private var referenceImage: CGImage?
+    private var recoveryIndex: RecoveryIndex?
     private var seedPosition = 0
     private var absolutePosition = 0
     private var carryoverRows = 0
     private let limitMessage = "单帧已达到图像上限，请缩小选区后重新截图。"
     var retainedPixelBytes: Int {
         (state?.retainedPixelBytes ?? 0) + (lastReliable?.pixels.count ?? 0) +
-            (pendingAxisFrame?.frame.pixels.count ?? 0) + pages.reduce(0) { $0 + $1.retainedPixelBytes }
+            (pendingAxisFrame?.frame.pixels.count ?? 0) + (recoveryIndex?.retainedPixelBytes ?? 0) +
+            pages.reduce(0) { $0 + $1.retainedPixelBytes }
     }
 
     init(estimator: any OffsetEstimating = VisionOffsetEstimator(), limits: StitchLimits = .default,
@@ -133,10 +135,10 @@ final class StitchingController {
         }
         let estimate = knownEstimate ?? estimator.estimate(previous: previous, current: frame)
         guard let shift = estimate.shift, shift > -frame.height, shift < frame.height else {
-            return recover(estimate.message ?? "重叠或纹理证据不足，请往回滚到参考画面，再减小滚动幅度。")
+            return recover(estimate.message ?? "重叠或纹理证据不足，请往回滚到参考画面，再减小滚动幅度。", frame: frame)
         }
         guard OverlapValidator().score(previous, frame, shift: shift).isReliable else {
-            return recover("无法确认正文重叠，请往回滚到参考画面，再减小滚动幅度。")
+            return recover("无法确认正文重叠，请往回滚到参考画面，再减小滚动幅度。", frame: frame)
         }
         // Retain the integer anchor so subpixel motion can accumulate.
         if shift == 0 {
@@ -145,7 +147,7 @@ final class StitchingController {
         }
         let action = state?.accept(frame, shift: shift) ?? .rejected
         if action == .needsRecovery || action == .rejected {
-            return recover("接缝未能通过校验，请往回滚到参考画面后继续。")
+            return recover("接缝未能通过校验，请往回滚到参考画面后继续。", frame: frame)
         }
         absolutePosition += shift
         clearRecovery()
@@ -208,13 +210,14 @@ final class StitchingController {
         let reason = recoveryMessage ?? (state.atLimit ? "已达到图像上限，已保留确认部分。" : nil)
         let result = StitchedCapture(image: firstImage, incomplete: reason != nil, reason: reason, document: document)
         terminal = true
-        self.state = nil; lastReliable = nil; pendingAxisFrame = nil; pages = []; archive = nil
+        self.state = nil; lastReliable = nil; pendingAxisFrame = nil; recoveryIndex = nil; referenceImage = nil
+        pages = []; archive = nil
         return result
     }
 
     func cancel() {
         cancelled = true; terminal = true
-        state = nil; lastReliable = nil; pendingAxisFrame = nil; recoveryMessage = nil; referenceImage = nil
+        state = nil; lastReliable = nil; pendingAxisFrame = nil; recoveryMessage = nil; referenceImage = nil; recoveryIndex = nil
         pages = []; archive?.cleanup(); archive = nil
     }
 
@@ -225,13 +228,24 @@ final class StitchingController {
         return .unchanged
     }
 
-    private func clearRecovery() { recoveryMessage = nil; referenceImage = nil }
+    private func clearRecovery() { recoveryMessage = nil; referenceImage = nil; recoveryIndex = nil }
 
     private func outputImage(_ image: CGImage) throws -> CGImage {
         axis == .horizontal ? try PixelImage(image).transposed().cgImage() : image
     }
 
-    private func recover(_ message: String) -> StitchUpdate {
+    private func recover(_ message: String, frame: PixelImage? = nil) -> StitchUpdate {
+        if let frame, let state, axis != .automatic,
+           frame.width == state.width, frame.height == state.frameHeight {
+            if recoveryIndex == nil { recoveryIndex = state.makeRecoveryIndex() }
+            if let position = recoveryIndex?.locate(frame, viewport: state.recoveryViewport),
+               self.state?.relocate(to: position) == true {
+                lastReliable = frame
+                absolutePosition = seedPosition + position
+                clearRecovery()
+                return update(.stayed, progress: .recovered)
+            }
+        }
         recoveryMessage = message
         if referenceImage == nil, let previous = lastReliable {
             let reference = axis == .horizontal ? (try? previous.transposed()) ?? previous : previous
