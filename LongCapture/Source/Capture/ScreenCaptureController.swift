@@ -166,7 +166,7 @@ enum ScreenCaptureError: LocalizedError {
         switch self {
         case .displayUnavailable: return "显示器已断开或分辨率发生变化，请重新框选。"
         case .permissionDenied: return "尚未允许屏幕录制。请在系统设置的隐私与安全性中允许「长截图」，必要时重新启动应用。"
-        case .invalidSelection: return "请在同一显示器内选择纵向滚动区域，至少 24 × 24 点且不小于 96 × 64 像素。"
+        case .invalidSelection: return "请在同一显示器内选择滚动区域，至少 24 × 24 点且不小于 96 × 64 像素。"
         case .initialFrameTooLarge: return "选区超过 6,400 万像素或 50,000 像素高度，请缩小选区。"
         }
     }

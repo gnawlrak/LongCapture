@@ -1,5 +1,16 @@
 # Development Log
 
+## 2026-10-29 - Slice 16: short horizontal viewport dimension contract
+
+Contract: every 96 x 64px viewport accepted by capture geometry must remain eligible for matching after horizontal transposition. Reliability/texture/ambiguity/seam gates stay unchanged; no claim that a generated reproduction identifies every failure in the user's unspecified app.
+
+- Reproduced with a generated local horizontal webpage in an independent WKWebView. Both WebKit snapshots and ScreenCaptureKit own-window screenshots of the full viewport stitched normally. Cropping the same actual screen frames to 64/80px-tall text strips reproduced 10/10 recovery failures in manual horizontal and automatic modes, while 96px and above had none. The estimator retained a vertical-only 96px minimum width after the controller swapped the axes.
+- Added two minimal tests using independently drawn upright CoreText rows, not transposed vertical textures. The old implementation produced 160 failed assertions. The tests cover 64/65/80/95/96/128px height, both directions/modes, exact full-image pixels, revisits, small moves, no-overlap recovery, blank/repetition rejection and the still-invalid 64 x 64px case. Matching now requires short side >=64 and long side >=96; the capture error wording no longer says vertical-only. No numeric matching threshold changed.
+- Replayed the exact screen frames after the fix. For 64/80px, each mode paused on one ambiguous frame out of ten, then recovered via subsequent reliable overlap; final output is complete. Taller 96/120/240/480/900px crops had no pauses. Every final image is byte-identical to a reference assembled from the first/last frame at the known 1440px displacement. That remaining ambiguity is explicitly retained, not concealed or force-stitched. Artifacts/logs stay under ignored `build/HorizontalProbe/` and `build/horizontal-*.log`.
+- Full XCTest: 129 passed, zero failures; Release core: 82 passed, zero failures. Existing system Vision cache diagnostics remain visible without failed assertions or cache edits. Independent Release passes icon, both bundled licenses, strict signature and changed-content identity regression. Geometry, existing vertical behavior and cancellation/session tests remain green.
+- Backed up the installed app to `build/Backups/20261029-210124-horizontal-short/Release.app`; normally terminated PID 56116 before replacement and retained the displaced app as `InstalledRelease.app`. Verified old/new designated-requirement equality, installed executable equality and finished launch of PID 65673 from the usual Release path. No force quit, TCC change, login-item registration, push or new public release.
+- Stop decision: commit this bounded fix and evidence locally. Ask for the user's application/failure symptom if the updated app still fails. Real user-page and production-stream gesture acceptance remain unresolved; generated own-window ScreenCaptureKit screenshots are not represented as that acceptance.
+
 ## 2026-10-29 - Slice 15: default automatic scroll-axis detection
 
 Contract: the normal menu/shortcut path requires no axis selection. Reliable unique-axis motion locks the session, including across reversal and page rollover; uncertain/diagonal content never authorizes guessed pixels. Manual overrides, existing permissions and matching thresholds remain unchanged.

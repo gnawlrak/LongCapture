@@ -28,6 +28,47 @@ private final class KnownFramePositionEstimator: OffsetEstimating {
 }
 
 final class StitchingTests: XCTestCase {
+    func testRealVisionShortHorizontalTextSelectionsMatchAcceptedGeometry() throws {
+        let canvas = HorizontalTextTestCanvas()
+        for height in [64, 65, 80, 95, 96, 128] {
+            for axis in [CaptureAxis.horizontal, .automatic] {
+                for sign in [1, -1] {
+                    let sut = StitchingController(axis: axis)
+                    for offset in [0, 40, 80, 40, 81, 83, 120] {
+                        let update = sut.accept(canvas.frame(at: 500 + sign * offset, width: 800, height: height))
+                        XCTAssertNotEqual(update.action, .needsRecovery, "height=\(height), mode=\(axis), sign=\(sign), offset=\(offset): \(update.message ?? "")")
+                    }
+                    let result = try sut.finish()
+                    XCTAssertFalse(result.incomplete)
+                    XCTAssertEqual(result.document.axis, .horizontal)
+                    try assertPixelsEqual(result.image, canvas.frame(at: sign == 1 ? 500 : 380, width: 920, height: height))
+                }
+            }
+        }
+    }
+
+    func testShortHorizontalSelectionsStillRejectBlankAmbiguousAndNoOverlapFrames() throws {
+        let canvas = HorizontalTextTestCanvas()
+        for axis in [CaptureAxis.horizontal, .automatic] {
+            let sut = StitchingController(axis: axis)
+            let first = canvas.frame(at: 0, width: 800, height: 64)
+            _ = sut.accept(first)
+            XCTAssertEqual(sut.accept(canvas.frame(at: 2000, width: 800, height: 64)).action, .needsRecovery)
+            XCTAssertEqual(sut.accept(canvas.frame(at: 60, width: 800, height: 64)).action, .grew)
+            let result = try sut.finish()
+            XCTAssertFalse(result.incomplete)
+            try assertPixelsEqual(result.image, canvas.frame(at: 0, width: 860, height: 64))
+        }
+        let blank = try PixelImage(TestCanvas.blank(width: 64, height: 800))
+        XCTAssertNil(VisionOffsetEstimator().estimate(previous: blank, current: blank).shift)
+        let repeating = TestCanvas(width: 64, repeatedPeriod: 20)
+        XCTAssertNil(VisionOffsetEstimator().estimate(previous: try PixelImage(repeating.frame(at: 0, height: 180)),
+            current: try PixelImage(repeating.frame(at: 40, height: 180))).shift)
+        let tooSmall = TestCanvas(width: 64)
+        XCTAssertNil(VisionOffsetEstimator().estimate(previous: try PixelImage(tooSmall.frame(at: 0, height: 64)),
+            current: try PixelImage(tooSmall.frame(at: 10, height: 64))).shift)
+    }
+
     func testAutomaticAxisUsesRealVisionForBothAxesAndDirections() throws {
         let canvas = TestCanvas(width: 240)
         for axis in [CaptureAxis.vertical, .horizontal] {

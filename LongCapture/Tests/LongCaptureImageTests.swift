@@ -123,6 +123,42 @@ struct TextTestCanvas {
     }
 }
 
+/// Upright horizontal text, rendered independently rather than transposing vertical test content.
+struct HorizontalTextTestCanvas {
+    let image: CGImage
+
+    init(width: Int = 4_800, height: Int = 128) {
+        var pixels = Data(count: width * height * 4)
+        pixels.withUnsafeMutableBytes { raw in
+            let context = CGContext(data: raw.baseAddress, width: width, height: height,
+                                    bitsPerComponent: 8, bytesPerRow: width * 4,
+                                    space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue |
+                                        CGBitmapInfo.byteOrder32Big.rawValue)!
+            context.setFillColor(CGColor(gray: 1, alpha: 1))
+            context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+            let font = CTFontCreateWithName("Menlo" as CFString, 14, nil)
+            for row in 0..<(height / 22) {
+                let text = (0..<80).map { column in
+                    let value = UInt32(truncatingIfNeeded: column &* 668_265_263 &+ row &* 374_761_393)
+                    return String(format: "%02d-%02d:%08X  ", row, column, value)
+                }.joined()
+                let line = CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: [
+                    NSAttributedString.Key(kCTFontAttributeName as String): font,
+                    NSAttributedString.Key(kCTForegroundColorAttributeName as String): CGColor(gray: 0.1, alpha: 1)
+                ]))
+                context.textPosition = CGPoint(x: 0, y: height - row * 22 - 17)
+                CTLineDraw(line, context)
+            }
+        }
+        image = TestCanvas.image(width: width, height: height, pixels: pixels)
+    }
+
+    func frame(at x: Int, width: Int, height: Int) -> CGImage {
+        image.cropping(to: CGRect(x: x, y: 0, width: width, height: height))!
+    }
+}
+
 enum ViewportOverlayEdge { case top, bottom }
 
 /// A viewport-fixed fade and jump button, not part of the scrolling document.

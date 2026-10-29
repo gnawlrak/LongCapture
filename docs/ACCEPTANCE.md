@@ -7,7 +7,7 @@
 - 捕获边界分片：`swift test`，3 项通过（Retina/负坐标、跨屏拒绝、BGRA 复制与所有权）。
 - 拼接/会话分片：`swift test`，28 项通过。
 - 权限增量：8 项注入测试通过，覆盖不主动弹窗、已授权不重复申请、申请成功/拒绝、重启前仍阻止采集、外部允许/撤销、防重入及系统设置链接失败；权限分片时 `swift test` 共 36 项通过，累计位移修复后当前共 54 项通过。
-- 完整 App/XCTest：自动方向识别分片后共 127 项通过，0 失败（横向/续张版为 120 项）。包含真实 Vision 与 CoreText 的逐像素测试，不只检查图片高度；也包含原生 `NSWindow.performClose`、丢弃按钮和拒绝丢弃后的继续保存。
+- 完整 App/XCTest：横向短选区修复后共 129 项通过，0 失败（自动识别版为 127 项）。包含真实 Vision 与 CoreText 的逐像素测试，不只检查图片高度；也包含原生 `NSWindow.performClose`、丢弃按钮和拒绝丢弃后的继续保存。
 - 设置权限区的原生离屏渲染已检查，浅色/深色下状态、申请/打开设置/检查按钮完整显示；这不代表系统授权弹窗已实测。
 - `./scripts/build.sh`：Release 构建成功，原生 arm64 可执行文件；应用包包含 MIT notice。
 - `codesign --verify --deep --strict`：签名完整性通过。2026-10-28 起改为本机现有 Apple Development 证书签名，不再以 ad-hoc 交付；没有公证或商店签名。
@@ -126,11 +126,20 @@
 - 独立 Release、图标、两份许可资源、严格签名与内容改变后的身份回归通过；新旧指定要求一致。旧包备份到 `build/Backups/20261029-202619-auto-axis/Release.app` 和 `InstalledRelease.app`，PID 46147 正常退出后安装，PID 56116 从原正式版路径启动。未重置权限、注册登录项或推送发布。
 - 日志：`build/auto-axis-red.log`、`build/auto-axis-full-final.log`、`build/auto-axis-core-final.log`、`build/auto-axis-ui.log`、`build/auto-axis-release.log`、`build/auto-axis-signing.log`、`build/auto-axis-installed-launch.log`。真实应用的自动识别手感、初始斜滑和长时间滚动仍需人工验收。
 
+## 横向短选区必失败修复（2026-10-29）
+
+- 用户报告横向截图失败率接近 100%，但尚未得到其应用名、选区尺寸或原始帧，不能证明下述问题是该报告的唯一根因。先在独立 WKWebView 加载本地生成的非敏感横向网页，通过 WebKit 快照和 ScreenCaptureKit `SCScreenshotManager` 的自身窗口过滤分别取帧；1000×620 点的完整页面两种模式都能连续拼接。
+- 对同一组实际屏幕帧裁取 64/80px 高正文短条，旧版手动横向及自动模式各 10/10 次需要恢复；96px 及以上各 0/10。定位为尺寸契约冲突：采集接受 96×64px，横向转置后匹配器却仍要求归一化宽度至少 96px。现在按短边至少 64px、长边至少 96px 校验，消除转置造成的必然拒绝；错误提示不再误称只支持纵向。
+- 新增 2 项回归，使用独立 CoreText 正向横排文字，不转置纵向素材。覆盖高度 64/65/80/95/96/128px、左右方向、手动/自动模式、反向回看及 1–3px 微动的整图像素；另测无重叠拒绝后恢复、空白与重复图案拒绝，以及 64×64px 仍不满足最低尺寸。
+- 复用原屏幕帧对照：64/80px 每条序列仍有 1/10 次重复图案歧义暂停，但后续可靠重叠可恢复，最终均输出 3440px 宽完整结果；96/120/240/480/900px 每条均为 0/10 暂停。所有最终结果与首尾帧构成的已知位移参考图逐字节相同，0 差异。保留那次歧义，不降低像素、纹理、歧义或接缝阈值来追求零暂停。
+- 完整 XCTest **129/129**、Release 核心 **82/82**、图标、签名及内容变化后的指定要求回归通过。旧包备份到 `build/Backups/20261029-210124-horizontal-short/Release.app` 和 `InstalledRelease.app`，旧 PID 56116 正常退出后替换，新 PID 65673 从原路径启动；可执行文件与独立验证构建一致。未更改 TCC、开启登录项、推送或发布新版。
+- 日志及合成网页帧在忽略的 `build/horizontal-*.log` 和 `build/HorizontalProbe/`。主要证据：`horizontal-short-red.log`、`horizontal-short-green.log`、`horizontal-short-baseline.log`、`horizontal-short-screen-pixels.log`、`horizontal-short-full-tests.log`、`horizontal-short-core-tests.log`。屏幕截图过滤器检查窗口归属，仅包含测试窗口，不采集用户内容；这不是生产 `SCStream` 加真实手势的端到端验收，更不是用户原页面已修复的证明。
+
 ## 尚未验证
 
 以下条目**未完成，不标为通过**：
 
-- 新增横向模式在真实应用里的左右手动滚动、达到生产 64M/50K 单张上限后的持续长流续张及多张实际分享流程；已有合成像素、真实 Vision、注入尾帧和原生 UI 测试，不代替实际屏幕采集。
+- 用户原横向失败页面、生产 App/`SCStream` 加真实左右手势、达到生产 64M/50K 单张上限后的持续长流续张及多张实际分享流程；已有生成网页独立窗口的屏幕帧与像素对照、真实 Vision、注入尾帧和原生 UI 测试，不代替该项验收。
 - Safari 真实长网页的 ScreenCaptureKit 实际画面、手动滚动、缩略图与最终 PNG。
 - TextEdit 真实长文档采集，尤其慢滚与反向恢复。
 - 微信向上聊天记录。没有用户确认的非敏感测试会话，未打开或采集用户聊天。

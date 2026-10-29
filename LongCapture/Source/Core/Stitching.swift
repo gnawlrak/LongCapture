@@ -310,8 +310,10 @@ struct VisionOffsetEstimator: OffsetEstimating {
     private let validator = OverlapValidator()
 
     func estimate(previous: PixelImage, current: PixelImage) -> MoveEstimate {
+        // Horizontal normalization swaps the accepted 96 x 64 viewport dimensions.
         guard previous.width == current.width, previous.height == current.height,
-              previous.width >= 96, previous.height >= 64 else {
+              min(previous.width, previous.height) >= 64,
+              max(previous.width, previous.height) >= 96 else {
             return MoveEstimate(shift: nil, message: "选区太小或画面尺寸发生变化，请重新选择。")
         }
         do {
