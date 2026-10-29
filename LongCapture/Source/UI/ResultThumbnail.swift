@@ -11,12 +11,15 @@ final class ResultThumbnail {
     private let onAutoSave: () -> Void
     private let lifecycle = ResultLifecycle()
     private var statusLabel: NSTextField?
+    private let pageCount: Int
 
     init(image: NSImage, screenFrame: CGRect, warning: String? = nil,
+         pageCount: Int = 1,
          onOpen: @escaping () -> Void, onAutoSave: @escaping () -> Void) {
         self.image = image
         self.screenFrame = screenFrame
         self.warning = warning
+        self.pageCount = pageCount
         self.onOpen = onOpen
         self.onAutoSave = onAutoSave
     }
@@ -37,7 +40,7 @@ final class ResultThumbnail {
         panel.isReleasedWhenClosed = false
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         let card = ThumbnailCard(frame: NSRect(origin: .zero, size: size), image: image,
-                                 warning: warning, onClick: { [weak self] in self?.openPreview() },
+                                 warning: warning, pageCount: pageCount, onClick: { [weak self] in self?.openPreview() },
                                  onHover: { [weak self] hovered in self?.lifecycle.setHovered(hovered) })
         statusLabel = card.statusLabel
         panel.contentView = card
@@ -92,7 +95,7 @@ private final class ThumbnailCard: NSView {
     private let onHover: (Bool) -> Void
     private var tracking: NSTrackingArea?
 
-    init(frame: NSRect, image: NSImage, warning: String?,
+    init(frame: NSRect, image: NSImage, warning: String?, pageCount: Int,
          onClick: @escaping () -> Void, onHover: @escaping (Bool) -> Void) {
         self.onClick = onClick
         self.onHover = onHover
@@ -104,12 +107,13 @@ private final class ThumbnailCard: NSView {
         let content = glass.contentView
         setAccessibilityElement(true)
         setAccessibilityRole(.button)
-        setAccessibilityLabel("长截图已完成，点击打开预览；不操作将自动保存")
+        setAccessibilityLabel("已完成 \(pageCount) 张长截图，点击打开预览；不操作将自动保存全部")
 
         let preview = ThumbnailImageView(image: image)
         preview.translatesAutoresizingMaskIntoConstraints = false
         content.addSubview(preview)
-        let title = NSTextField(labelWithString: "长截图已完成")
+        let title = NSTextField(labelWithString: pageCount > 1 ? "已完成 \(pageCount) 张长截图" : "长截图已完成")
+        if pageCount > 1 { statusLabel.stringValue = "5 秒后保存全部 · 点击逐张预览" }
         title.font = .systemFont(ofSize: 13, weight: .semibold)
         statusLabel.font = .systemFont(ofSize: 12)
         statusLabel.textColor = .secondaryLabelColor

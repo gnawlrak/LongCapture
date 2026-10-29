@@ -11,10 +11,16 @@ final class CaptureOverlay {
     private let onDone: () -> Void
     private let onCancel: () -> Void
     private var doneButton: NSButton!
+    private let referenceView = NSImageView()
+    private let recoveryRow = NSStackView()
+    private var normalToolbarFrame: CGRect = .zero
+    private let displayRect: CGRect
+    private var recoveredUntil: TimeInterval = 0
 
     init(displayRect: CGRect, region: CGRect, onDone: @escaping () -> Void, onCancel: @escaping () -> Void) {
         self.onDone = onDone
         self.onCancel = onCancel
+        self.displayRect = displayRect
         borderWindow = NSWindow(contentRect: region.insetBy(dx: -2, dy: -2), styleMask: .borderless, backing: .buffered, defer: false)
         borderWindow.isOpaque = false
         borderWindow.backgroundColor = .clear
@@ -41,6 +47,7 @@ final class CaptureOverlay {
         toolbar.isReleasedWhenClosed = false
         toolbar.sharingType = .none
         toolbar.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        normalToolbarFrame = toolbar.frame
         let background = NativeGlassView(cornerRadius: 24)
         background.frame = CGRect(origin: .zero, size: toolbar.frame.size)
         toolbar.contentView = background
@@ -65,11 +72,29 @@ final class CaptureOverlay {
         let stack = NSStackView(views: [stateIcon, labels, NSView(), cancel, doneButton])
         stack.spacing = 12
         stack.translatesAutoresizingMaskIntoConstraints = false
-        background.contentView.addSubview(stack)
+        referenceView.imageScaling = .scaleProportionallyUpOrDown
+        referenceView.setAccessibilityLabel("最后确认的画面参考图")
+        referenceView.translatesAutoresizingMaskIntoConstraints = false
+        let recoveryHelp = NSTextField(wrappingLabelWithString: "最后确认的画面\n往回滚到左侧内容，再小幅滚动继续。\n无法确认时不会跳过内容。")
+        recoveryHelp.font = .systemFont(ofSize: 12)
+        recoveryRow.addArrangedSubview(referenceView)
+        recoveryRow.addArrangedSubview(recoveryHelp)
+        recoveryRow.spacing = 12
+        recoveryRow.isHidden = true
+        let column = NSStackView(views: [stack, recoveryRow])
+        column.orientation = .vertical
+        column.spacing = 12
+        column.alignment = .leading
+        column.translatesAutoresizingMaskIntoConstraints = false
+        background.contentView.addSubview(column)
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: background.contentView.leadingAnchor, constant: 18),
-            stack.trailingAnchor.constraint(equalTo: background.contentView.trailingAnchor, constant: -14),
-            stack.centerYAnchor.constraint(equalTo: background.contentView.centerYAnchor)
+            column.leadingAnchor.constraint(equalTo: background.contentView.leadingAnchor, constant: 18),
+            column.trailingAnchor.constraint(equalTo: background.contentView.trailingAnchor, constant: -14),
+            column.centerYAnchor.constraint(equalTo: background.contentView.centerYAnchor),
+            stack.widthAnchor.constraint(equalTo: column.widthAnchor),
+            recoveryRow.widthAnchor.constraint(equalTo: column.widthAnchor),
+            referenceView.widthAnchor.constraint(equalToConstant: 160),
+            referenceView.heightAnchor.constraint(equalToConstant: 94)
         ])
     }
 
@@ -83,6 +108,7 @@ final class CaptureOverlay {
     }
 
     func setFinishing() {
+        showReference(nil)
         doneButton.isEnabled = false
         status.stringValue = "正在处理尾帧并合成长图…"
         detail.stringValue = "请稍候，正在保留最后一帧"
@@ -92,16 +118,41 @@ final class CaptureOverlay {
     func update(_ update: StitchUpdate) {
         doneButton.isEnabled = true
         status.textColor = update.action == .needsRecovery ? .systemOrange : .labelColor
+        let extent = "\(update.axis.title)第 \(update.pageCount) 张 · \(update.height) / \(update.maximumHeight) px"
         if update.action == .needsRecovery {
             status.stringValue = "匹配暂停，请往回滚动恢复"
-            detail.stringValue = "已确认内容仍保留，不会跳过缺失部分"
+            detail.stringValue = "\(extent) · 已确认内容仍保留"
             setSymbol("arrow.uturn.backward", color: .systemOrange)
+            showReference(update.referenceImage)
         } else {
-            status.stringValue = "已确认 \(update.height) px · 手动滚动"
-            detail.stringValue = "再次按截图快捷键或点完成，结束采集"
-            setSymbol("arrow.up.and.down", color: .controlAccentColor)
+            showReference(nil)
+            if update.progress == .recovered { recoveredUntil = ProcessInfo.processInfo.systemUptime + 2 }
+            switch update.progress {
+            case .revisiting: status.stringValue = "反向回看 · 已有内容不变"
+            case .continued: status.stringValue = "已自动续到第 \(update.pageCount) 张 · 继续滚动"
+            default:
+                if ProcessInfo.processInfo.systemUptime < recoveredUntil { status.stringValue = "已恢复匹配 · 可继续滚动" }
+                else if update.progress == .unchanged { status.stringValue = "画面未新增 · 等待滚动" }
+                else { status.stringValue = "正在增长 · 手动滚动" }
+            }
+            detail.stringValue = extent + (update.height * 100 >= update.maximumHeight * 85
+                ? " · 接近单张上限，将自动续张" : " · 再按快捷键完成")
+            setSymbol(update.progress == .revisiting ? "arrow.uturn.backward" : "arrow.up.and.down", color: .controlAccentColor)
         }
         status.toolTip = update.message ?? "再次按截图快捷键或点完成，结束采集。"
+    }
+
+    private func showReference(_ image: CGImage?) {
+        let show = image != nil
+        referenceView.image = image.map { NSImage(cgImage: $0, size: NSSize(width: $0.width, height: $0.height)) }
+        guard recoveryRow.isHidden == show else { return }
+        recoveryRow.isHidden = !show
+        var frame = normalToolbarFrame
+        if show {
+            frame.size.height = 188
+            frame.origin.y = max(displayRect.minY + 12, min(normalToolbarFrame.maxY - 188, displayRect.maxY - 200))
+        }
+        toolbar.setFrame(frame, display: true)
     }
 
     @objc private func donePressed() { onDone() }

@@ -95,6 +95,7 @@ final class SessionCoordinator {
     private let onError: (Error) -> Void
     private let onUpdate: (StitchUpdate) -> Void
     private let onStateChanged: (State) -> Void
+    private let controllerFactory: (CaptureAxis) -> StitchingController
 
     init(sourceFactory: @escaping SourceFactory = { geometry, frame, error in
         try await ScreenCaptureController(geometry: geometry, onFrame: frame, onError: error)
@@ -102,13 +103,15 @@ final class SessionCoordinator {
          onResult: @escaping (SessionResult) -> Void,
          onError: @escaping (Error) -> Void,
          onUpdate: @escaping (StitchUpdate) -> Void = { _ in },
-         onStateChanged: @escaping (State) -> Void = { _ in }) {
+         onStateChanged: @escaping (State) -> Void = { _ in },
+         controllerFactory: @escaping (CaptureAxis) -> StitchingController = { StitchingController(continuesAtLimit: true, axis: $0) }) {
         self.sourceFactory = sourceFactory
         self.now = now
         self.onResult = onResult
         self.onError = onError
         self.onUpdate = onUpdate
         self.onStateChanged = onStateChanged
+        self.controllerFactory = controllerFactory
     }
 
     func prepareForSelection() {
@@ -116,12 +119,12 @@ final class SessionCoordinator {
         state = .selecting
     }
 
-    func beginCapture(geometry: CaptureGeometry) async {
+    func beginCapture(geometry: CaptureGeometry, axis: CaptureAxis = .vertical) async {
         guard state == .selecting else { return }
         generation &+= 1
         let token = generation
         self.geometry = geometry
-        let pipeline = FrameProcessingPipeline(controller: StitchingController(), onUpdate: { [weak self] update in
+        let pipeline = FrameProcessingPipeline(controller: controllerFactory(axis), onUpdate: { [weak self] update in
             Task { @MainActor in
                 guard let self, self.generation == token,
                       self.state == .capturing || self.state == .starting else { return }
@@ -173,11 +176,14 @@ final class SessionCoordinator {
                 switch outcome {
                 case .success(let capture):
                     self.state = .result
-                    let warnings = [capture.reason, notice].compactMap { $0 }.filter { !$0.isEmpty }
+                    var warnings: [String] = []
+                    for warning in [capture.reason, notice].compactMap({ $0 }) where !warning.isEmpty && !warnings.contains(warning) {
+                        warnings.append(warning)
+                    }
                     self.onResult(SessionResult(image: capture.image, displayScale: geometry.scale,
                         region: geometry.globalRect, screenID: geometry.displayID, screenFrame: geometry.displayFrame,
                         capturedAt: self.now(), incomplete: capture.incomplete || notice != nil,
-                        notice: warnings.isEmpty ? nil : warnings.joined(separator: "\n")))
+                        notice: warnings.isEmpty ? nil : warnings.joined(separator: "\n"), document: capture.document))
                 case .failure(let error):
                     self.state = .idle
                     self.onError(error)
@@ -218,6 +224,14 @@ struct SessionResult: @unchecked Sendable {
     let capturedAt: Date
     let incomplete: Bool
     let notice: String?
+    let document: CaptureDocument
+
+    init(image: CGImage, displayScale: CGFloat, region: CGRect, screenID: CGDirectDisplayID,
+         screenFrame: CGRect, capturedAt: Date, incomplete: Bool, notice: String?, document: CaptureDocument? = nil) {
+        self.image = image; self.displayScale = displayScale; self.region = region; self.screenID = screenID
+        self.screenFrame = screenFrame; self.capturedAt = capturedAt; self.incomplete = incomplete; self.notice = notice
+        self.document = document ?? CaptureDocument(image: image)
+    }
 }
 
 enum CaptureSessionError: LocalizedError {

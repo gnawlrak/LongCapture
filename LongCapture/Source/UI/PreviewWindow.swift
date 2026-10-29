@@ -2,7 +2,7 @@ import AppKit
 
 @MainActor
 final class PreviewWindowController: NSWindowController, NSWindowDelegate {
-    private let image: NSImage
+    private var image: NSImage
     private let onSave: () async throws -> URL
     private let onDiscard: () -> Bool
     private let onChooseDirectory: () -> Void
@@ -12,14 +12,27 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate {
     private let statusLabel = NSTextField(labelWithString: "原始像素 PNG · 关闭窗口也会保存")
     private let scrollView = NSScrollView()
     private let zoomMenu = NSPopUpButton()
+    private let pageMenu = NSPopUpButton()
+    private let dimensions = NSTextField(labelWithString: "")
+    private let pageCount: Int
+    private let axis: CaptureAxis
+    private let loadPage: ((Int) async throws -> NSImage)?
+    private let onExport: ((SegmentExportOptions) async throws -> URL)?
+    private var isExporting = false
+    private var isLoadingPage = false
+    private var currentPageIndex = 0
 
     init(image: NSImage, warning: String? = nil,
          onSave: @escaping () async throws -> URL, onDiscard: @escaping () -> Bool,
-         onChooseDirectory: @escaping () -> Void) {
+         onChooseDirectory: @escaping () -> Void, pageCount: Int = 1, axis: CaptureAxis = .vertical,
+         loadPage: ((Int) async throws -> NSImage)? = nil,
+         onExport: ((SegmentExportOptions) async throws -> URL)? = nil) {
         self.image = image
         self.onSave = onSave
         self.onDiscard = onDiscard
         self.onChooseDirectory = onChooseDirectory
+        self.pageCount = pageCount; self.loadPage = loadPage; self.onExport = onExport
+        self.axis = axis
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 820, height: 650),
                               styleMask: [.titled, .closable, .resizable, .miniaturizable],
                               backing: .buffered, defer: false)
@@ -39,7 +52,7 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate {
         showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
-        fitWidth()
+        fitDefault()
     }
 
     func closeAfterResolution() {
@@ -51,6 +64,7 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate {
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         guard !resolved else { return true }
+        guard !isExporting else { return false }
         Task { await saveAndClose() }
         return false
     }
@@ -60,15 +74,16 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate {
         let surface = NativeGlassView(cornerRadius: 0, interactive: false, legacyMaterial: .windowBackground)
         window.contentView = surface
         let root = surface.contentView
-        let dimensions = NSTextField(labelWithString: "\(Int(image.size.width)) × \(Int(image.size.height)) 像素")
+        dimensions.stringValue = "\(Int(image.size.width)) × \(Int(image.size.height)) 像素"
         dimensions.textColor = .secondaryLabelColor
         dimensions.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
         let copy = NSButton(title: "复制", image: NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: nil)!,
                             target: self, action: #selector(copyClicked))
         NativeUI.styleAction(copy)
+        copy.toolTip = "复制当前显示的一张长图，不是整组"
         copy.keyEquivalent = "c"
         copy.keyEquivalentModifierMask = [.command]
-        for (name, tag) in [("适合宽度", 0), ("25%", 25), ("50%", 50), ("100%", 100), ("200%", 200), ("400%", 400)] {
+        for (name, tag) in [(axis == .horizontal ? "适合高度" : "适合宽度", 0), ("25%", 25), ("50%", 50), ("100%", 100), ("200%", 200), ("400%", 400)] {
             zoomMenu.addItem(withTitle: name)
             zoomMenu.lastItem?.tag = tag
         }
@@ -83,7 +98,13 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate {
         imageInfo.orientation = .vertical
         imageInfo.alignment = .leading
         imageInfo.spacing = 3
-        let top = NSStackView(views: [imageInfo, NSView(), copy, zoomMenu])
+        for index in 0..<pageCount { pageMenu.addItem(withTitle: "第 \(index + 1) / \(pageCount) 张") }
+        pageMenu.target = self
+        pageMenu.action = #selector(pageChanged)
+        pageMenu.setAccessibilityLabel("长截图分页，按阅读顺序排列")
+        NativeUI.styleAction(pageMenu)
+        pageMenu.isHidden = pageCount < 2
+        let top = NSStackView(views: [imageInfo, NSView(), pageMenu, copy, zoomMenu])
         top.orientation = .horizontal
         top.spacing = 12
         top.alignment = .centerY
@@ -107,6 +128,13 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate {
         let folder = NSButton(title: "保存位置…", target: self, action: #selector(chooseDirectoryClicked))
         let discard = NSButton(title: "丢弃", target: self, action: #selector(discardClicked))
         let save = NSButton(title: "保存 PNG", target: self, action: #selector(saveClicked))
+        if pageCount > 1 { save.title = "保存全部 PNG" }
+        let export = NSButton(title: "分段导出…", target: self, action: #selector(exportClicked))
+        NativeUI.styleAction(export)
+        export.image = NSImage(systemSymbolName: axis == .horizontal ? "rectangle.split.3x1" : "rectangle.split.1x3", accessibilityDescription: nil)
+        export.imagePosition = .imageLeading
+        export.toolTip = "另存适合分享的短图，不替代原始长图；原图仍需保存或明确丢弃"
+        export.isEnabled = onExport != nil
         save.keyEquivalent = "s"
         save.keyEquivalentModifierMask = [.command]
         let done = NSButton(title: "完成", target: self, action: #selector(saveClicked))
@@ -117,14 +145,17 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate {
         discard.image = NSImage(systemSymbolName: "trash", accessibilityDescription: nil)
         save.image = NSImage(systemSymbolName: "square.and.arrow.down", accessibilityDescription: nil)
         for button in [folder, discard, save] { button.imagePosition = .imageLeading }
-        discard.toolTip = "丢弃这张截图，不保存"
-        actionButtons = [folder, discard, save, done]
-        let actions = NSStackView(views: [folder, NSView(), discard, save, done])
+        discard.toolTip = "丢弃未保存的原始截图；已明确导出的副本不会删除"
+        actionButtons = [folder, discard, save, done, copy, export]
+        let actions = NSStackView(views: [folder, export, NSView(), discard, save, done])
         actions.orientation = .horizontal
         actions.spacing = 10
         actions.alignment = .centerY
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.font = .systemFont(ofSize: 12)
+        statusLabel.lineBreakMode = .byTruncatingMiddle
+        statusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        if pageCount > 1 { statusLabel.stringValue = "共 \(pageCount) 张，按\(axis == .horizontal ? "从左到右" : "从上到下")排列 · 关闭窗口保存全部" }
 
         let stack = NSStackView()
         stack.orientation = .vertical
@@ -143,6 +174,7 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate {
         }
         stack.addArrangedSubview(scrollView)
         stack.addArrangedSubview(statusLabel)
+        statusLabel.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         stack.addArrangedSubview(actions)
         for view in [top, scrollView, actions] {
             view.translatesAutoresizingMaskIntoConstraints = false
@@ -159,17 +191,18 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate {
         ])
     }
 
-    private func fitWidth() {
+    private func fitDefault() {
         window?.contentView?.layoutSubtreeIfNeeded()
-        let available = max(1, scrollView.contentSize.width - 4)
-        scrollView.magnification = min(1, max(0.01, available / max(1, image.size.width)))
+        let available = max(1, (axis == .horizontal ? scrollView.contentSize.height : scrollView.contentSize.width) - 4)
+        let length = axis == .horizontal ? image.size.height : image.size.width
+        scrollView.magnification = min(1, max(0.01, available / max(1, length)))
         scrollView.documentView?.scroll(.zero)
         zoomMenu.selectItem(withTag: 0)
     }
 
     @objc private func zoomChanged() {
         guard let item = zoomMenu.selectedItem else { return }
-        if item.tag == 0 { fitWidth() }
+        if item.tag == 0 { fitDefault() }
         else { scrollView.magnification = CGFloat(item.tag) / 100 }
     }
 
@@ -185,7 +218,7 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate {
     @objc private func saveClicked() { Task { await saveAndClose() } }
 
     @objc private func discardClicked() {
-        guard lifecycle.state != .saving, lifecycle.state != .resolved,
+        guard !isExporting, lifecycle.state != .saving, lifecycle.state != .resolved,
               onDiscard(), lifecycle.discard() else { return }
         guard !resolved else { return }
         resolved = true
@@ -193,8 +226,9 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func saveAndClose() async {
-        guard lifecycle.beginSave(), !resolved else { return }
+        guard !isExporting, lifecycle.beginSave(), !resolved else { return }
         actionButtons.forEach { $0.isEnabled = false }
+        pageMenu.isEnabled = false
         statusLabel.stringValue = "正在保存 PNG…"
         do {
             _ = try await onSave()
@@ -203,6 +237,7 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate {
         } catch {
             lifecycle.saveFailed()
             actionButtons.forEach { $0.isEnabled = true }
+            pageMenu.isEnabled = !isLoadingPage
             statusLabel.stringValue = "保存失败，截图仍然保留。可重试或选择其他目录。"
             statusLabel.textColor = .systemRed
             let alert = NSAlert()
@@ -217,6 +252,93 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate {
                 if response == .alertFirstButtonReturn { Task { await self.saveAndClose() } }
                 if response == .alertSecondButtonReturn { self.onChooseDirectory() }
             }
+        }
+    }
+
+    @objc private func pageChanged() {
+        guard !resolved, !isLoadingPage, !isExporting, lifecycle.state == .preview, let loadPage else { return }
+        let index = pageMenu.indexOfSelectedItem
+        isLoadingPage = true
+        pageMenu.isEnabled = false
+        statusLabel.stringValue = "正在读取第 \(index + 1) 张…"
+        Task { [weak self] in
+            guard let self else { return }
+            defer {
+                self.isLoadingPage = false
+                self.pageMenu.isEnabled = !self.isExporting && self.lifecycle.state == .preview && !self.resolved
+            }
+            do {
+                let image = try await loadPage(index)
+                guard !self.resolved else { return }
+                self.image = image
+                self.currentPageIndex = index
+                self.scrollView.documentView = CaptureImageView(image: image)
+                self.dimensions.stringValue = "\(Int(image.size.width)) × \(Int(image.size.height)) 像素"
+                if !self.isExporting && self.lifecycle.state == .preview {
+                    self.statusLabel.stringValue = "第 \(index + 1) / \(self.pageCount) 张 · 复制仅复制当前张，保存会保存全部"
+                }
+                self.fitDefault()
+            } catch {
+                self.pageMenu.selectItem(at: self.currentPageIndex)
+                guard !self.resolved, !self.isExporting, self.lifecycle.state == .preview else { return }
+                self.statusLabel.stringValue = "读取失败，结果仍保留：\(error.localizedDescription)"
+                self.statusLabel.textColor = .systemRed
+            }
+        }
+    }
+
+    @objc private func exportClicked() {
+        guard !resolved, !isExporting, lifecycle.state == .preview, onExport != nil, let window else { return }
+        let alert = NSAlert()
+        alert.messageText = "另存分段 PNG"
+        alert.informativeText = "按原始像素\(axis.lengthTitle)分段，保留相邻重叠，方便分享。所有续张都会导出到同一个新文件夹；原始长图不变。"
+        let height = NSTextField(string: "2400")
+        let overlap = NSTextField(string: "120")
+        height.setAccessibilityLabel("分段\(axis.lengthTitle)，像素")
+        overlap.setAccessibilityLabel("相邻重叠，像素")
+        let form = NSStackView(views: [NSTextField(labelWithString: "分段\(axis.lengthTitle)（256–20,000 像素）"), height,
+                                      NSTextField(labelWithString: "重叠像素（不超过分段长度的一半）"), overlap])
+        form.orientation = .vertical
+        form.alignment = .leading
+        form.spacing = 8
+        form.frame = CGRect(x: 0, y: 0, width: 320, height: 132)
+        height.widthAnchor.constraint(equalToConstant: 300).isActive = true
+        overlap.widthAnchor.constraint(equalToConstant: 300).isActive = true
+        alert.accessoryView = form
+        alert.addButton(withTitle: "导出")
+        alert.addButton(withTitle: "取消")
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard response == .alertFirstButtonReturn, let self else { return }
+            guard let h = Int(height.stringValue), let o = Int(overlap.stringValue) else {
+                self.statusLabel.stringValue = SegmentExportError.invalidOptions.localizedDescription
+                return
+            }
+            let options = SegmentExportOptions(length: h, overlap: o)
+            do { _ = try options.ranges(imageLength: 1) }
+            catch { self.statusLabel.stringValue = error.localizedDescription; return }
+            Task { await self.exportSegments(options) }
+        }
+    }
+
+    func exportSegments(_ options: SegmentExportOptions) async {
+        guard !resolved, !isExporting, lifecycle.state == .preview, let onExport else { return }
+        isExporting = true
+        actionButtons.forEach { $0.isEnabled = false }
+        pageMenu.isEnabled = false
+        statusLabel.stringValue = "正在另存分段 PNG，原始长图仍保留…"
+        defer {
+            isExporting = false
+            actionButtons.forEach { $0.isEnabled = true }
+            pageMenu.isEnabled = !isLoadingPage
+        }
+        do {
+            let url = try await onExport(options)
+            statusLabel.stringValue = "已导出：\(url.lastPathComponent) · 原始长图仍需保存或丢弃"
+            statusLabel.toolTip = url.path
+            statusLabel.textColor = .secondaryLabelColor
+        } catch {
+            statusLabel.stringValue = "分段导出失败，原图仍保留：\(error.localizedDescription)"
+            statusLabel.textColor = .systemRed
         }
     }
 }

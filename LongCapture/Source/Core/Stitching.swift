@@ -2,6 +2,12 @@ import CoreGraphics
 import Foundation
 import Vision
 
+enum CaptureAxis: String, Equatable, Sendable {
+    case vertical, horizontal
+    var title: String { self == .vertical ? "纵向" : "横向" }
+    var lengthTitle: String { self == .vertical ? "高度" : "宽度" }
+}
+
 struct StitchLimits: Sendable {
     var maximumPixels = 64_000_000
     var maximumHeight = 50_000
@@ -15,14 +21,25 @@ struct StitchLimits: Sendable {
 
 enum StitchDirection: Equatable { case up, down }
 enum StitchAction: Equatable, Sendable { case grew, stayed, needsRecovery, hitLimit, rejected }
+enum StitchProgress: Equatable, Sendable { case growing, unchanged, revisiting, recovering, recovered, continued }
 
-struct StitchUpdate: Sendable {
+struct StitchUpdate: @unchecked Sendable {
     let action: StitchAction
     let height: Int
     let message: String?
+    let progress: StitchProgress
+    let referenceImage: CGImage?
+    let pageCount: Int
+    let maximumHeight: Int
+    let axis: CaptureAxis
 
-    init(action: StitchAction, height: Int, message: String? = nil) {
+    init(action: StitchAction, height: Int, message: String? = nil,
+         progress: StitchProgress = .growing, referenceImage: CGImage? = nil,
+         pageCount: Int = 1, maximumHeight: Int = 50_000, axis: CaptureAxis = .vertical) {
         self.action = action; self.height = height; self.message = message
+        self.progress = progress; self.referenceImage = referenceImage
+        self.pageCount = pageCount; self.maximumHeight = maximumHeight
+        self.axis = axis
     }
 }
 
@@ -30,6 +47,12 @@ struct StitchedCapture {
     let image: CGImage
     let incomplete: Bool
     let reason: String?
+    let document: CaptureDocument
+
+    init(image: CGImage, incomplete: Bool, reason: String?, document: CaptureDocument? = nil) {
+        self.image = image; self.incomplete = incomplete; self.reason = reason
+        self.document = document ?? CaptureDocument(image: image)
+    }
 }
 
 struct MoveEstimate {
@@ -105,6 +128,32 @@ struct PixelImage {
         try Self.makeImage(width: width, height: height, pixels: pixels)
     }
 
+    /// A lossless transpose maps horizontal movement onto the same checked vertical engine.
+    /// Tiling keeps both source and destination accesses local; no resampling or color conversion.
+    func transposed() throws -> PixelImage {
+        var output = Data(count: pixels.count)
+        pixels.withUnsafeBytes { sourceBytes in
+            output.withUnsafeMutableBytes { destinationBytes in
+                let source = sourceBytes.bindMemory(to: UInt32.self)
+                let destination = destinationBytes.bindMemory(to: UInt32.self)
+                for top in stride(from: 0, to: height, by: 32) {
+                    for left in stride(from: 0, to: width, by: 32) {
+                        for y in top..<min(height, top + 32) {
+                            for x in left..<min(width, left + 32) {
+                                destination[x * height + y] = source[y * width + x]
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return PixelImage(width: height, height: width, pixels: output)
+    }
+
+    private init(width: Int, height: Int, pixels: Data) {
+        self.width = width; self.height = height; self.pixels = pixels
+    }
+
     static func makeImage(width: Int, height: Int, pixels: Data) throws -> CGImage {
         guard let provider = CGDataProvider(data: pixels as CFData),
               let image = CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32,
@@ -141,7 +190,8 @@ struct StitchState {
         strips.reduce(0) { $0 + $1.pixels.count } + (frontier?.frame.pixels.count ?? 0)
     }
 
-    init(first: PixelImage, limits: StitchLimits) throws {
+    init(first: PixelImage, limits: StitchLimits, direction: StitchDirection? = nil) throws {
+        self.direction = direction
         width = first.width; frameHeight = first.height
         maximumHeight = limits.height(forWidth: first.width)
         guard maximumHeight > 0 else { throw StitchError.invalidFrame }

@@ -643,4 +643,186 @@ final class StitchingTests: XCTestCase {
         XCTAssertTrue(result.incomplete)
         try assertPixelsEqual(result.image, first)
     }
+    func testContinuationPreservesPixelsInBothDirectionsAndOrdersPagesForReading() throws {
+        let canvas = TestCanvas()
+        for sign in [1, -1] {
+            let start = sign == 1 ? 0 : 600
+            let sut = StitchingController(estimator: ScriptedEstimator(Array(repeating: sign * 30, count: 14)),
+                limits: StitchLimits(maximumPixels: canvas.width * 190, maximumHeight: 240), continuesAtLimit: true)
+            for step in 0...14 {
+                let update = sut.accept(canvas.frame(at: start + sign * step * 30, height: 120))
+                XCTAssertNotEqual(update.action, .hitLimit)
+                XCTAssertNotEqual(update.action, .needsRecovery)
+                XCTAssertLessThanOrEqual(sut.retainedPixelBytes, canvas.width * (190 + 240) * 4)
+            }
+            let result = try sut.finish()
+            XCTAssertFalse(result.incomplete)
+            XCTAssertGreaterThan(result.document.pages.count, 2)
+            var end: Int?
+            for page in result.document.pages {
+                XCTAssertLessThanOrEqual(page.height, 190)
+                if let end { XCTAssertLessThan(page.origin, end, "Adjacent pages must overlap, never skip rows") }
+                try assertPixelsEqual(page.load(), canvas.frame(at: start + page.origin, height: page.height))
+                end = page.origin + page.height
+            }
+            XCTAssertEqual(result.document.pages.first?.origin, sign == 1 ? 0 : -420)
+            XCTAssertEqual(end, sign == 1 ? 540 : 120)
+            XCTAssertEqual(result.document.pages.filter { $0.fileURL != nil }.count,
+                           result.document.pages.count - 1, "Upwards capture leaves the in-memory final page first in reading order")
+        }
+    }
+
+    func testExactCapDoesNotEmitDuplicateContinuationAndReversalDoesNotGrow() throws {
+        let canvas = TestCanvas()
+        let sut = StitchingController(estimator: ScriptedEstimator([30, 30, -30, 30, 30]),
+            limits: StitchLimits(maximumPixels: canvas.width * 180, maximumHeight: 180), continuesAtLimit: true)
+        for y in [0, 30, 60, 30, 60] { _ = sut.accept(canvas.frame(at: y, height: 120)) }
+        let revisit = sut.accept(canvas.frame(at: 90, height: 120))
+        XCTAssertEqual(revisit.action, .grew)
+        let result = try sut.finish()
+        XCTAssertEqual(result.document.pages.count, 2)
+        try assertPixelsEqual(result.document.pages[0].load(), canvas.frame(at: 0, height: 180))
+        try assertPixelsEqual(result.document.pages[1].load(), canvas.frame(at: 60, height: 150))
+
+        let exact = StitchingController(estimator: ScriptedEstimator([30, 30]),
+            limits: StitchLimits(maximumPixels: canvas.width * 180, maximumHeight: 180), continuesAtLimit: true)
+        for y in [0, 30, 60] { _ = exact.accept(canvas.frame(at: y, height: 120)) }
+        XCTAssertEqual(try exact.finish().document.pages.count, 1)
+    }
+
+    func testRecoveryReferenceAndRevisitStatusDoNotAdvanceReliableAnchor() throws {
+        let canvas = TestCanvas()
+        let sut = StitchingController(estimator: ScriptedEstimator([30, -15, nil, 15, 30]))
+        _ = sut.accept(canvas.frame(at: 0, height: 120))
+        _ = sut.accept(canvas.frame(at: 30, height: 120))
+        XCTAssertEqual(sut.accept(canvas.frame(at: 15, height: 120)).progress, .revisiting)
+        let paused = sut.accept(canvas.frame(at: 600, height: 120))
+        XCTAssertNotNil(paused.referenceImage)
+        XCTAssertEqual(paused.progress, .recovering)
+        XCTAssertEqual(sut.accept(canvas.frame(at: 30, height: 120)).progress, .recovered)
+        _ = sut.accept(canvas.frame(at: 60, height: 120))
+        try assertPixelsEqual(sut.finish().image, canvas.frame(at: 0, height: 180))
+    }
+
+    func testContinuationTemporaryFilesAreReleasedOnCancelAndResultRelease() throws {
+        let canvas = TestCanvas()
+        let archive = CapturePageArchive()
+        var sut: StitchingController? = StitchingController(estimator: ScriptedEstimator([30, 30, 30]),
+            limits: StitchLimits(maximumPixels: canvas.width * 180, maximumHeight: 180),
+            continuesAtLimit: true, archive: archive)
+        for y in [0, 30, 60, 90] { _ = sut?.accept(canvas.frame(at: y, height: 120)) }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: archive.directory.path))
+        sut?.cancel()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: archive.directory.path))
+        sut = nil
+    }
+
+    func testHorizontalCaptureBothDirectionsSlowMotionReversalsAndContinuation() throws {
+        let canvas = TestCanvas(width: 180)
+        for sign in [1, -1] {
+            let start = sign == 1 ? 0 : 600
+            let offsets = [0, 30, 60, 30, 90, 91, 92, 120, 150, 180, 210, 240]
+            let shifts = zip(offsets, offsets.dropFirst()).map { sign * ($1 - $0) }
+            let sut = StitchingController(estimator: ScriptedEstimator(shifts.map(Optional.some)),
+                limits: StitchLimits(maximumPixels: 180 * 190, maximumHeight: 240),
+                continuesAtLimit: true, axis: .horizontal)
+            for offset in offsets {
+                let frame = try PixelImage(canvas.frame(at: start + sign * offset, height: 120)).transposed().cgImage()
+                let update = sut.accept(frame)
+                XCTAssertNotEqual(update.action, .needsRecovery)
+                XCTAssertNotEqual(update.action, .hitLimit)
+                XCTAssertEqual(update.axis, .horizontal)
+            }
+            let result = try sut.finish()
+            XCTAssertEqual(result.document.axis, .horizontal)
+            XCTAssertFalse(result.incomplete)
+            XCTAssertGreaterThan(result.document.pages.count, 1)
+            for page in result.document.pages {
+                XCTAssertLessThanOrEqual(page.width, 190)
+                XCTAssertEqual(page.height, 180)
+                let expected = try PixelImage(canvas.frame(at: start + page.origin, height: page.width)).transposed().cgImage()
+                try assertPixelsEqual(page.load(), expected)
+            }
+        }
+    }
+
+    func testRealVisionHorizontalCaptureAndTransposeRoundTripPreserveAllPixels() throws {
+        let canvas = TestCanvas(width: 240)
+        let first = canvas.frame(at: 200, height: 180)
+        try assertPixelsEqual(PixelImage(first).transposed().transposed().cgImage(), first)
+        for sign in [1, -1] {
+            let sut = StitchingController(axis: .horizontal)
+            for offset in [0, 24, 48, 72] {
+                let frame = try PixelImage(canvas.frame(at: 200 + sign * offset, height: 180)).transposed().cgImage()
+                XCTAssertNotEqual(sut.accept(frame).action, .needsRecovery)
+            }
+            let result = try sut.finish()
+            let expected = try PixelImage(canvas.frame(at: sign == 1 ? 200 : 128, height: 252)).transposed().cgImage()
+            try assertPixelsEqual(result.image, expected)
+        }
+    }
+
+    func testTransposeHasIndependentKnownPixelOrder() throws {
+        let colors: [[UInt8]] = (1...6).map { value in [UInt8(value), UInt8(10 + value), UInt8(20 + value), 255] }
+        let pixels = Data(colors.flatMap { $0 })
+        let original = try PixelImage.makeImage(width: 3, height: 2, pixels: pixels)
+        let transposed = try PixelImage(original).transposed()
+        XCTAssertEqual(transposed.width, 2)
+        XCTAssertEqual(transposed.height, 3)
+        let expected = Data([0, 3, 1, 4, 2, 5].flatMap { colors[$0] })
+        XCTAssertEqual(transposed.pixels, expected)
+    }
+
+    func testSpoolFailureStopsSafelyWithoutLosingCrossingOverflow() throws {
+        let canvas = TestCanvas()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try Data([1]).write(to: root)
+        defer { try? FileManager.default.removeItem(at: root) }
+        for sign in [1, -1] {
+            let start = sign == 1 ? 0 : 200
+            let sut = StitchingController(estimator: ScriptedEstimator([sign * 40, sign * 40]),
+                limits: StitchLimits(maximumPixels: canvas.width * 190, maximumHeight: 190),
+                continuesAtLimit: true, archive: CapturePageArchive(root: root))
+            _ = sut.accept(canvas.frame(at: start, height: 120))
+            _ = sut.accept(canvas.frame(at: start + sign * 40, height: 120))
+            XCTAssertEqual(sut.accept(canvas.frame(at: start + sign * 80, height: 120)).action, .hitLimit)
+            let result = try sut.finish()
+            XCTAssertTrue(result.incomplete)
+            XCTAssertTrue(result.reason?.contains("临时文件") == true)
+            XCTAssertEqual(result.document.pages.count, 2)
+            for page in result.document.pages {
+                try assertPixelsEqual(page.load(), canvas.frame(at: start + page.origin, height: page.height))
+            }
+            XCTAssertEqual(result.document.pages.first?.origin, sign == 1 ? 0 : -80)
+            XCTAssertEqual(result.document.pages.last.map { $0.origin + $0.height }, sign == 1 ? 200 : 120)
+        }
+    }
+
+    func testReleasingFinishedDocumentRemovesOnlyItsOwnTemporaryFiles() throws {
+        let canvas = TestCanvas()
+        let sut = StitchingController(estimator: ScriptedEstimator([30, 30, 30]),
+            limits: StitchLimits(maximumPixels: canvas.width * 180, maximumHeight: 180), continuesAtLimit: true)
+        for y in [0, 30, 60, 90] { _ = sut.accept(canvas.frame(at: y, height: 120)) }
+        var result: StitchedCapture? = try sut.finish()
+        let file = try XCTUnwrap(result?.document.pages.first?.fileURL)
+        weak let document = result?.document
+        XCTAssertTrue(FileManager.default.fileExists(atPath: file.path))
+        result = nil
+        XCTAssertNil(document)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.deletingLastPathComponent().path))
+    }
+
+    func testContinuationCanRecoverAndFinishIncompleteWithoutDroppingEarlierPages() throws {
+        let canvas = TestCanvas()
+        let sut = StitchingController(estimator: ScriptedEstimator([30, 30, 30, nil]),
+            limits: StitchLimits(maximumPixels: canvas.width * 180, maximumHeight: 180), continuesAtLimit: true)
+        for y in [0, 30, 60, 90] { _ = sut.accept(canvas.frame(at: y, height: 120)) }
+        XCTAssertEqual(sut.accept(canvas.frame(at: 600, height: 120)).action, .needsRecovery)
+        let result = try sut.finish()
+        XCTAssertTrue(result.incomplete)
+        XCTAssertEqual(result.document.pages.count, 2)
+        try assertPixelsEqual(result.document.pages[0].load(), canvas.frame(at: 0, height: 180))
+        try assertPixelsEqual(result.document.pages[1].load(), canvas.frame(at: 60, height: 150))
+    }
+
 }

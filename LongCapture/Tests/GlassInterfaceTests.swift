@@ -321,6 +321,72 @@ final class GlassInterfaceTests: XCTestCase {
     }
 
     @MainActor
+    func testSelectionAllowsExplicitAxisChoiceWithoutChangingGeometry() throws {
+        _ = NSApplication.shared
+        let overlay = SelectionOverlay(displayRect: CGRect(x: 0, y: 0, width: 1280, height: 800),
+                                       initialAxis: .horizontal, onBegin: { _ in }, onCancel: {})
+        defer { overlay.close() }
+        XCTAssertEqual(overlay.selectedAxis, .horizontal)
+        let root = try XCTUnwrap(overlay.window?.contentView)
+        let control = try XCTUnwrap(descendants(in: root).compactMap { $0 as? NSSegmentedControl }.first)
+        XCTAssertEqual(control.label(forSegment: 1), "横向")
+        control.selectedSegment = 0
+        NSApp.sendAction(try XCTUnwrap(control.action), to: control.target, from: control)
+        XCTAssertEqual(overlay.selectedAxis, .vertical)
+        XCTAssertNil(overlay.currentSelection)
+    }
+
+    @MainActor
+    func testRecoveryReferenceAndDistinctStatesStayInsideToolbarAndRemainExcluded() throws {
+        _ = NSApplication.shared
+        let existing = Set(NSApp.windows.map(ObjectIdentifier.init))
+        let overlay = CaptureOverlay(displayRect: CGRect(x: 0, y: 0, width: 1280, height: 800),
+                                     region: CGRect(x: 100, y: 100, width: 700, height: 550), onDone: {}, onCancel: {})
+        defer { overlay.close() }
+        let panel = try XCTUnwrap(NSApp.windows.first { !existing.contains(ObjectIdentifier($0)) && $0 is NSPanel })
+        let root = try XCTUnwrap(panel.contentView)
+        let image = try XCTUnwrap(sampleImage().cgImage(forProposedRect: nil, context: nil, hints: nil))
+        overlay.update(StitchUpdate(action: .needsRecovery, height: 900, progress: .recovering, referenceImage: image))
+        root.layoutSubtreeIfNeeded()
+        XCTAssertEqual(panel.sharingType, .none)
+        let reference = try XCTUnwrap(descendants(in: root).compactMap { $0 as? NSImageView }.first { $0.image?.size == NSSize(width: image.width, height: image.height) })
+        XCTAssertFalse(reference.isHiddenOrHasHiddenAncestor)
+        XCTAssertTrue(root.bounds.contains(root.convert(reference.bounds, from: reference)))
+        XCTAssertEqual(panel.frame.height, 188)
+        overlay.update(StitchUpdate(action: .stayed, height: 900, progress: .revisiting))
+        XCTAssertTrue(reference.isHiddenOrHasHiddenAncestor)
+        XCTAssertEqual(panel.frame.height, 72)
+        XCTAssertTrue(descendants(in: root).compactMap { $0 as? NSTextField }.contains { $0.stringValue.contains("反向回看") })
+        overlay.update(StitchUpdate(action: .grew, height: 920, progress: .recovered))
+        XCTAssertTrue(descendants(in: root).compactMap { $0 as? NSTextField }.contains { $0.stringValue.contains("已恢复") })
+    }
+
+    @MainActor
+    func testMultiPagePreviewNavigationAndExportStayVisibleAtMinimumWindowSize() async throws {
+        _ = NSApplication.shared
+        let image = sampleImage()
+        var loaded: [Int] = []
+        let controller = PreviewWindowController(image: image, onSave: { URL(fileURLWithPath: "/tmp/unused") },
+            onDiscard: { true }, onChooseDirectory: {}, pageCount: 3, axis: .horizontal,
+            loadPage: { index in loaded.append(index); return image }, onExport: { _ in URL(fileURLWithPath: "/tmp/unused") })
+        defer { controller.closeAfterResolution() }
+        let window = try XCTUnwrap(controller.window)
+        window.setFrame(NSRect(origin: .zero, size: window.minSize), display: false)
+        let root = try XCTUnwrap(window.contentView)
+        root.layoutSubtreeIfNeeded()
+        for title in ["复制", "保存位置…", "分段导出…", "丢弃", "保存全部 PNG", "完成"] {
+            let action = try XCTUnwrap(button(title, in: root))
+            XCTAssertTrue(root.bounds.contains(root.convert(action.bounds, from: action)), title)
+            XCTAssertFalse(action.isHiddenOrHasHiddenAncestor)
+        }
+        let pages = try XCTUnwrap(descendants(in: root).compactMap { $0 as? NSPopUpButton }.first { $0.itemTitles.contains("第 3 / 3 张") })
+        pages.selectItem(at: 2)
+        NSApp.sendAction(try XCTUnwrap(pages.action), to: pages.target, from: pages)
+        for _ in 0..<5 { await Task.yield() }
+        XCTAssertEqual(loaded, [2])
+    }
+
+    @MainActor
     private func glassViews(in view: NSView) -> [NSView] {
         if #available(macOS 26.0, *) {
             return descendants(in: view).filter { $0 is NSGlassEffectView }

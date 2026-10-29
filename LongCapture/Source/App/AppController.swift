@@ -15,6 +15,7 @@ final class AppController: NSObject {
     private var originalApplication: NSRunningApplication?
     private var activeResult: SessionResult?
     private var saveTask: Task<URL, Error>?
+    private var isExporting = false
     private let screenCapturePermission = ScreenCapturePermission()
     private let loginItemSettings = LoginItemSettings()
     private var isPresentingPermissionAlert = false
@@ -38,6 +39,9 @@ final class AppController: NSObject {
         let menu = NSMenu()
         beginMenuItem.target = self
         menu.addItem(beginMenuItem)
+        let horizontal = NSMenuItem(title: "开始横向长截图", action: #selector(beginHorizontalSelection), keyEquivalent: "")
+        horizontal.target = self
+        menu.addItem(horizontal)
         let permissionItem = NSMenuItem(title: "屏幕录制权限…", action: #selector(showPermissionSettings), keyEquivalent: "")
         permissionItem.target = self
         menu.addItem(permissionItem)
@@ -58,6 +62,12 @@ final class AppController: NSObject {
     }
 
     @objc func beginSelection() {
+        presentSelection(axis: .vertical)
+    }
+
+    @objc private func beginHorizontalSelection() { presentSelection(axis: .horizontal) }
+
+    private func presentSelection(axis: CaptureAxis) {
         if activeResult != nil { openPreview(); return }
         if coordinator.state == .capturing { Task { await coordinator.complete() }; return }
         guard coordinator.state == .idle, !screenCapturePermission.isRequesting, !isPresentingPermissionAlert else { return }
@@ -68,12 +78,13 @@ final class AppController: NSObject {
         guard requestScreenCapturePermission(), coordinator.state == .idle else { return }
         coordinator.prepareForSelection()
         let displayFrame = screen.frame, scale = screen.backingScaleFactor
-        selectionOverlay = SelectionOverlay(displayRect: displayFrame, onBegin: { [weak self] rect in
+        selectionOverlay = SelectionOverlay(displayRect: displayFrame, initialAxis: axis, onBegin: { [weak self] rect in
             guard let self else { return }
+            let axis = self.selectionOverlay?.selectedAxis ?? axis
             self.selectionOverlay = nil
             do {
                 let geometry = try CaptureGeometry(displayID: displayID, displayFrame: displayFrame, selection: rect, scale: scale)
-                self.startCapture(geometry: geometry)
+                self.startCapture(geometry: geometry, axis: axis)
             } catch {
                 Task { await self.coordinator.cancel(); self.showCaptureError(error) }
             }
@@ -86,7 +97,7 @@ final class AppController: NSObject {
         selectionOverlay?.show()
     }
 
-    private func startCapture(geometry: CaptureGeometry) {
+    private func startCapture(geometry: CaptureGeometry, axis: CaptureAxis) {
         selectionOverlay?.close()
         selectionOverlay = nil
         captureOverlay = CaptureOverlay(displayRect: geometry.displayFrame, region: geometry.globalRect,
@@ -98,7 +109,7 @@ final class AppController: NSObject {
             })
         captureOverlay?.show()
         originalApplication?.activate()
-        Task { await coordinator.beginCapture(geometry: geometry) }
+        Task { await coordinator.beginCapture(geometry: geometry, axis: axis) }
     }
 
     private func shortcutPressed() {
@@ -211,6 +222,7 @@ final class AppController: NSObject {
         captureOverlay?.close(); captureOverlay = nil
         let warning = result.incomplete ? "不完整：\(result.notice ?? "仅保留已确认部分。")" : result.notice
         thumbnail = ResultThumbnail(image: displayImage(result), screenFrame: result.screenFrame, warning: warning,
+            pageCount: result.document.pages.count,
             onOpen: { [weak self] in self?.openPreview() }, onAutoSave: { [weak self] in
                 Task { @MainActor in
                     guard let self else { return }
@@ -235,16 +247,27 @@ final class AppController: NSObject {
                 guard let self else { throw CaptureSessionError.cancelled }
                 return try await self.saveResult()
             }, onDiscard: { [weak self] in self?.discardResult() ?? false },
-            onChooseDirectory: { [weak self] in self?.chooseSaveDirectory() })
+            onChooseDirectory: { [weak self] in self?.chooseSaveDirectory() },
+            pageCount: result.document.pages.count, axis: result.document.axis,
+            loadPage: { index in
+                let image = try await Task.detached(priority: .userInitiated) {
+                    try result.document.pages[index].load()
+                }.value
+                return NSImage(cgImage: image, size: NSSize(width: image.width, height: image.height))
+            }, onExport: { [weak self] options in
+                guard let self else { throw CaptureSessionError.cancelled }
+                return try await self.exportSegments(options)
+            })
         preview?.show()
     }
 
     private func saveResult() async throws -> URL {
+        guard !isExporting else { throw SegmentExportError.busy }
         if let saveTask { return try await saveTask.value }
         guard let result = activeResult else { throw CaptureSessionError.noFrames }
         let directory = saveDirectory
         let task = Task.detached(priority: .userInitiated) {
-            try ResultStore().save(image: result.image, to: directory, capturedAt: result.capturedAt)
+            try ResultStore().save(document: result.document, to: directory, capturedAt: result.capturedAt)
         }
         saveTask = task
         do {
@@ -259,6 +282,18 @@ final class AppController: NSObject {
             saveTask = nil
             throw error
         }
+    }
+
+    private func exportSegments(_ options: SegmentExportOptions) async throws -> URL {
+        guard saveTask == nil, let result = activeResult else { throw SegmentExportError.busy }
+        let directory = saveDirectory
+        isExporting = true
+        let task = Task.detached(priority: .userInitiated) {
+            try ResultStore().save(document: result.document, to: directory, capturedAt: result.capturedAt, segments: options)
+        }
+        saveTask = task
+        defer { saveTask = nil; isExporting = false }
+        return try await task.value
     }
 
     private func discardResult() -> Bool {
@@ -334,6 +369,10 @@ final class AppController: NSObject {
 
     /// Returning false keeps a failed save or an interrupted capture alive instead of losing it on Quit.
     func requestTermination() async -> Bool {
+        if isExporting {
+            alert(title: "正在分段导出", message: "请等待导出完成后再退出，原始长图仍保留。")
+            return false
+        }
         if coordinator.state == .starting || coordinator.state == .capturing || coordinator.state == .finishing {
             alert(title: "请先完成或取消截图", message: "当前正在采集或合成长图，处理完成后再退出。")
             return false

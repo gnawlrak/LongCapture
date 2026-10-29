@@ -59,6 +59,11 @@ struct RenderInterface {
                                                    onDiscard: { true }, onChooseDirectory: {})
             try await render(preview.window!, name: "preview-\(label)", appearance: appearance, into: output)
             preview.closeAfterResolution()
+            let multiple = PreviewWindowController(image: sampleHorizontalDocument(), onSave: { output.appendingPathComponent("unused") },
+                onDiscard: { true }, onChooseDirectory: {}, pageCount: 3, axis: .horizontal,
+                loadPage: { _ in sampleHorizontalDocument() }, onExport: { _ in output.appendingPathComponent("unused") })
+            try await render(multiple.window!, name: "preview-horizontal-pages-\(label)", appearance: appearance, into: output)
+            multiple.closeAfterResolution()
 
             let display = CGRect(x: 0, y: 0, width: 1280, height: 800)
             let selection = SelectionOverlay(displayRect: display, safeTopInset: 33, onBegin: { _ in }, onCancel: {})
@@ -74,6 +79,10 @@ struct RenderInterface {
             }
             try await render(selection.window!, name: "selection-\(label)", appearance: appearance, into: output)
             selection.close()
+            let horizontalSelection = SelectionOverlay(displayRect: display, safeTopInset: 33, initialAxis: .horizontal,
+                                                       onBegin: { _ in }, onCancel: {})
+            try await render(horizontalSelection.window!, name: "selection-horizontal-\(label)", appearance: appearance, into: output)
+            horizontalSelection.close()
 
             let existing = Set(app.windows.map(ObjectIdentifier.init))
             let capture = CaptureOverlay(displayRect: display, region: CGRect(x: 180, y: 140, width: 920, height: 480),
@@ -82,7 +91,10 @@ struct RenderInterface {
             capture.setReady()
             capture.update(StitchUpdate(action: .grew, height: 12840))
             try await render(toolbar, name: "capture-\(label)", appearance: appearance, into: output)
-            capture.update(StitchUpdate(action: .needsRecovery, height: 12840))
+            capture.update(StitchUpdate(action: .needsRecovery, height: 12840, progress: .recovering,
+                                         referenceImage: image.cgImage(forProposedRect: nil, context: nil, hints: nil).flatMap {
+                                             $0.cropping(to: CGRect(x: 0, y: 0, width: $0.width, height: min(560, $0.height)))
+                                         }))
             try await render(toolbar, name: "recovery-\(label)", appearance: appearance, into: output)
             capture.close()
 
@@ -95,7 +107,7 @@ struct RenderInterface {
             try await render(panel, name: "thumbnail-\(label)", appearance: appearance, into: output)
             thumbnail.finish()
         }
-        print("Rendered 16 \(composited ? "composited" : "offscreen") native interface fixtures into \(output.path)")
+        print("Rendered 20 \(composited ? "composited" : "offscreen") native interface fixtures into \(output.path)")
     }
 
     private static var composited: Bool { CommandLine.arguments.contains("--composited") }
@@ -162,6 +174,30 @@ struct RenderInterface {
             throw NSError(domain: "RenderInterface", code: 2)
         }
         try png.write(to: output.appendingPathComponent("\(name).png"))
+    }
+
+    @MainActor
+    private static func sampleHorizontalDocument() -> NSImage {
+        NSImage(size: NSSize(width: 2200, height: 400), flipped: true) { rect in
+            NSColor.white.setFill()
+            rect.fill()
+            let accent = NSColor(calibratedRed: 0.08, green: 0.43, blue: 0.40, alpha: 1)
+            for i in 0..<8 {
+                let x = CGFloat(30 + i * 270)
+                accent.withAlphaComponent(0.07).setFill()
+                NSBezierPath(roundedRect: CGRect(x: x, y: 30, width: 250, height: 340), xRadius: 12, yRadius: 12).fill()
+                String(format: "%02d", i + 1).draw(at: CGPoint(x: x + 20, y: 60), withAttributes: [
+                    .font: NSFont.monospacedDigitSystemFont(ofSize: 36, weight: .semibold), .foregroundColor: accent
+                ])
+                ("左右滚动，连续拼接" as NSString).draw(at: CGPoint(x: x + 20, y: 160), withAttributes: [
+                    .font: NSFont.systemFont(ofSize: 18), .foregroundColor: NSColor.black
+                ])
+                ("本地生成的非敏感测试素材" as NSString).draw(at: CGPoint(x: x + 20, y: 210), withAttributes: [
+                    .font: NSFont.systemFont(ofSize: 14), .foregroundColor: NSColor.gray
+                ])
+            }
+            return true
+        }
     }
 
     @MainActor

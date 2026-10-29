@@ -8,6 +8,7 @@ final class SelectionOverlay: NSWindowController {
     private var resolved = false
 
     init(displayRect: CGRect, safeTopInset: CGFloat? = nil,
+         initialAxis: CaptureAxis = .vertical,
          onBegin: @escaping (CGRect) -> Void, onCancel: @escaping () -> Void) {
         self.displayRect = displayRect
         self.onBegin = onBegin
@@ -16,7 +17,7 @@ final class SelectionOverlay: NSWindowController {
         // The menu bar can be taller than the notch safe area, or hidden independently of it.
         let systemTopInset = screen.map { max($0.frame.maxY - $0.visibleFrame.maxY, $0.safeAreaInsets.top) } ?? 0
         self.selectionView = SelectionView(frame: CGRect(origin: .zero, size: displayRect.size),
-                                           safeTopInset: max(0, safeTopInset ?? systemTopInset))
+                                           safeTopInset: max(0, safeTopInset ?? systemTopInset), axis: initialAxis)
         let window = SelectionWindow(contentRect: displayRect, styleMask: .borderless, backing: .buffered, defer: false)
         window.isOpaque = false
         window.backgroundColor = .clear
@@ -35,6 +36,7 @@ final class SelectionOverlay: NSWindowController {
     var currentSelection: CGRect? {
         selectionView.selection.map { $0.offsetBy(dx: displayRect.minX, dy: displayRect.minY) }
     }
+    var selectedAxis: CaptureAxis { selectionView.axis }
 
     func show() {
         NSApp.activate(ignoringOtherApps: true)
@@ -76,8 +78,10 @@ private final class SelectionView: NSView {
     private var initialRect: CGRect = .zero
     private var dragMode: DragMode = .new
     private enum DragMode { case new, move, resize(Int) }
+    private let axisControl = NSSegmentedControl(labels: ["纵向", "横向"], trackingMode: .selectOne, target: nil, action: nil)
+    var axis: CaptureAxis { axisControl.selectedSegment == 1 ? .horizontal : .vertical }
 
-    init(frame frameRect: NSRect, safeTopInset: CGFloat) {
+    init(frame frameRect: NSRect, safeTopInset: CGFloat, axis: CaptureAxis) {
         super.init(frame: frameRect)
         titleLabel.font = .systemFont(ofSize: 14, weight: .semibold)
         noteLabel.font = .systemFont(ofSize: 12)
@@ -87,6 +91,11 @@ private final class SelectionView: NSView {
         labels.orientation = .vertical
         labels.alignment = .leading
         labels.spacing = 5
+        axisControl.selectedSegment = axis == .horizontal ? 1 : 0
+        axisControl.target = self
+        axisControl.action = #selector(axisChanged)
+        axisControl.setAccessibilityLabel("长截图方向，纵向或横向")
+        labels.addArrangedSubview(axisControl)
         labels.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         let cancel = NSButton(title: "取消", target: self, action: #selector(cancelClicked))
         NativeUI.styleAction(cancel)
@@ -125,9 +134,15 @@ private final class SelectionView: NSView {
             dimensionLabel.centerYAnchor.constraint(equalTo: dimensions.contentView.centerYAnchor)
         ])
         setAccessibilityLabel("拖动框选滚动区域，回车开始，Esc 取消")
+        axisChanged()
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    @objc private func axisChanged() {
+        titleLabel.stringValue = axis == .horizontal ? "框选横向滚动区域 · 向左或向右滚动" : "框选纵向滚动区域 · 向上或向下滚动"
+        noteLabel.stringValue = "只框正文，避开固定栏和动画；采集中不能混合横纵滚动。"
+    }
 
     override var acceptsFirstResponder: Bool { true }
     override func resetCursorRects() { addCursorRect(bounds, cursor: .crosshair) }

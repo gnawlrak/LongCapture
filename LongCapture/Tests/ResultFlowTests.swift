@@ -131,6 +131,167 @@ final class ResultFlowTests: XCTestCase {
         XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: directory.path).isEmpty)
     }
 
+    func testSegmentRangesCoverEveryPixelWithExactOverlapAndNoEmptyTail() throws {
+        let options = SegmentExportOptions(length: 256, overlap: 32)
+        XCTAssertEqual(try options.ranges(imageLength: 480), [0..<256, 224..<480])
+        XCTAssertEqual(try options.ranges(imageLength: 481), [0..<256, 224..<480, 448..<481])
+        XCTAssertEqual(try options.ranges(imageLength: 20), [0..<20])
+        XCTAssertThrowsError(try SegmentExportOptions(length: 256, overlap: 256).ranges(imageLength: 600))
+        XCTAssertThrowsError(try SegmentExportOptions(length: 256, overlap: 129).ranges(imageLength: 600))
+        XCTAssertThrowsError(try SegmentExportOptions(length: 0, overlap: 0).ranges(imageLength: 600))
+        XCTAssertThrowsError(try SegmentExportOptions(length: 20_001, overlap: 0).ranges(imageLength: 600))
+        XCTAssertThrowsError(try SegmentExportOptions(length: 256, overlap: -1).ranges(imageLength: 600))
+    }
+
+    func testGroupSaveAndSegmentExportPreservePixelsAndNeverOverwrite() throws {
+        let directory = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let canvas = TestCanvas(width: 120)
+        let document = CaptureDocument(pages: [CapturePage(image: canvas.frame(at: 0, height: 600)),
+            CapturePage(image: canvas.frame(at: 500, height: 400), origin: 500)])
+        let store = ResultStore()
+        let time = Date(timeIntervalSince1970: 1_700_000_000)
+        let first = try store.save(document: document, to: directory, capturedAt: time)
+        let second = try store.save(document: document, to: directory, capturedAt: time)
+        XCTAssertNotEqual(first, second)
+        let files = try FileManager.default.contentsOfDirectory(at: first, includingPropertiesForKeys: nil).sorted { $0.path < $1.path }
+        XCTAssertEqual(files.count, 2)
+        for (file, page) in zip(files, document.pages) {
+            let attributes = try FileManager.default.attributesOfItem(atPath: file.path)
+            XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o600)
+            let source = try XCTUnwrap(CGImageSourceCreateWithURL(file as CFURL, nil))
+            let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
+            try assertPixelsEqual(image, page.load())
+        }
+        let options = SegmentExportOptions(length: 256, overlap: 32)
+        let segmented = try store.save(document: document, to: directory, capturedAt: time, segments: options)
+        let pieces = try FileManager.default.contentsOfDirectory(at: segmented, includingPropertiesForKeys: nil).sorted { $0.path < $1.path }
+        XCTAssertEqual(pieces.count, 5)
+        var index = 0
+        for page in document.pages {
+            for range in try options.ranges(imageLength: page.height) {
+                let source = try XCTUnwrap(CGImageSourceCreateWithURL(pieces[index] as CFURL, nil))
+                let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
+                try assertPixelsEqual(image, canvas.frame(at: page.origin + range.lowerBound, height: range.count))
+                index += 1
+            }
+        }
+        XCTAssertEqual(document.pages.count, 2, "Export must not mutate or resolve the original result")
+    }
+
+    func testFailedGroupSavePublishesNothingAndRetainsTemporaryPagesForRetry() throws {
+        let directory = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let archive = CapturePageArchive()
+        let image = try makeResultImage()
+        let first = try archive.store(image, origin: 0)
+        let second = try archive.store(image, origin: 12)
+        let document = CaptureDocument(pages: [first, second], archive: archive)
+        let secondURL = try XCTUnwrap(second.fileURL)
+        let original = try Data(contentsOf: secondURL)
+        try Data([1, 2, 3]).write(to: secondURL)
+        XCTAssertThrowsError(try ResultStore().save(document: document, to: directory, capturedAt: Date()))
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: directory.path).isEmpty)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: try XCTUnwrap(first.fileURL).path))
+        try original.write(to: secondURL)
+        XCTAssertNoThrow(try ResultStore().save(document: document, to: directory, capturedAt: Date()))
+    }
+
+    func testHorizontalSegmentExportUsesWidthAndPreservesLeftToRightPixelOrder() throws {
+        let directory = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let canvas = TestCanvas(width: 120)
+        let image = try PixelImage(canvas.frame(at: 0, height: 600)).transposed().cgImage()
+        let document = CaptureDocument(pages: [CapturePage(image: image)], axis: .horizontal)
+        let options = SegmentExportOptions(length: 256, overlap: 32)
+        let folder = try ResultStore().save(document: document, to: directory, capturedAt: Date(), segments: options)
+        let pieces = try FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil).sorted { $0.path < $1.path }
+        XCTAssertEqual(pieces.count, 3)
+        for (file, rows) in zip(pieces, try options.ranges(imageLength: 600)) {
+            let source = try XCTUnwrap(CGImageSourceCreateWithURL(file as CFURL, nil))
+            let actual = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
+            let expected = try PixelImage(canvas.frame(at: rows.lowerBound, height: rows.count)).transposed().cgImage()
+            try assertPixelsEqual(actual, expected)
+        }
+    }
+
+    @MainActor
+    func testSegmentExportDoesNotSaveDiscardOrCloseOriginalAndBlocksCloseWhileBusy() async throws {
+        _ = NSApplication.shared
+        var saves = 0
+        var discards = 0
+        let started = expectation(description: "export begins")
+        var release: CheckedContinuation<URL, Error>?
+        let controller = PreviewWindowController(image: NSImage(cgImage: try makeResultImage(), size: NSSize(width: 12, height: 24)),
+            onSave: { saves += 1; return URL(fileURLWithPath: "/tmp/unused.png") },
+            onDiscard: { discards += 1; return true }, onChooseDirectory: {},
+            onExport: { _ in
+                try await withCheckedThrowingContinuation { release = $0; started.fulfill() }
+            })
+        let export = Task { await controller.exportSegments(SegmentExportOptions()) }
+        await fulfillment(of: [started], timeout: 2)
+        XCTAssertFalse(controller.windowShouldClose(try XCTUnwrap(controller.window)))
+        XCTAssertEqual(saves, 0)
+        XCTAssertEqual(discards, 0)
+        release?.resume(returning: URL(fileURLWithPath: "/tmp/exported"))
+        await export.value
+        XCTAssertEqual(saves, 0)
+        let content = try XCTUnwrap(controller.window?.contentView)
+        XCTAssertTrue(try XCTUnwrap(findButton(titled: "丢弃", in: content)).isEnabled)
+        controller.closeAfterResolution()
+    }
+
+    @MainActor
+    func testFailedSegmentExportLeavesOriginalActionsEnabledForRetry() async throws {
+        _ = NSApplication.shared
+        var exports = 0
+        let controller = PreviewWindowController(image: NSImage(cgImage: try makeResultImage(), size: NSSize(width: 12, height: 24)),
+            onSave: { XCTFail("Export must not save/resolve original"); return URL(fileURLWithPath: "/tmp/unused.png") },
+            onDiscard: { true }, onChooseDirectory: {}, onExport: { _ in
+                exports += 1
+                if exports == 1 { throw ResultSaveError.cannotWrite }
+                return URL(fileURLWithPath: "/tmp/exported")
+            })
+        await controller.exportSegments(SegmentExportOptions())
+        await controller.exportSegments(SegmentExportOptions())
+        XCTAssertEqual(exports, 2)
+        let content = try XCTUnwrap(controller.window?.contentView)
+        XCTAssertTrue(try XCTUnwrap(findButton(titled: "保存 PNG", in: content)).isEnabled)
+        XCTAssertTrue(try XCTUnwrap(findButton(titled: "分段导出…", in: content)).isEnabled)
+        controller.closeAfterResolution()
+    }
+
+    @MainActor
+    func testPageLoadFinishingDuringSaveDoesNotReenablePageSelection() async throws {
+        _ = NSApplication.shared
+        let image = NSImage(cgImage: try makeResultImage(), size: NSSize(width: 12, height: 24))
+        let loading = expectation(description: "page load begins")
+        let saving = expectation(description: "save begins")
+        var finishLoad: CheckedContinuation<NSImage, Error>?
+        var finishSave: CheckedContinuation<URL, Error>?
+        let controller = PreviewWindowController(image: image, onSave: {
+            try await withCheckedThrowingContinuation { finishSave = $0; saving.fulfill() }
+        }, onDiscard: { true }, onChooseDirectory: {}, pageCount: 2, loadPage: { _ in
+            try await withCheckedThrowingContinuation { finishLoad = $0; loading.fulfill() }
+        })
+        func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
+        let content = try XCTUnwrap(controller.window?.contentView)
+        let menu = try XCTUnwrap(descendants(content).compactMap { $0 as? NSPopUpButton }
+            .first { $0.numberOfItems == 2 })
+        menu.selectItem(at: 1)
+        menu.sendAction(menu.action, to: menu.target)
+        await fulfillment(of: [loading], timeout: 2)
+        XCTAssertFalse(controller.windowShouldClose(try XCTUnwrap(controller.window)))
+        await fulfillment(of: [saving], timeout: 2)
+        finishLoad?.resume(returning: image)
+        // Drain the resumed main-actor page task while the save is deliberately suspended.
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertFalse(menu.isEnabled)
+        finishSave?.resume(returning: URL(fileURLWithPath: "/tmp/unused.png"))
+        for _ in 0..<20 { await Task.yield() }
+        controller.closeAfterResolution()
+    }
+
     @MainActor
     func testNativePreviewCloseSavesOnceAndDoesNotRecurse() async throws {
         _ = NSApplication.shared
