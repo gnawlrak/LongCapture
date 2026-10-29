@@ -329,11 +329,16 @@ final class GlassInterfaceTests: XCTestCase {
         XCTAssertEqual(overlay.selectedAxis, .horizontal)
         let root = try XCTUnwrap(overlay.window?.contentView)
         let control = try XCTUnwrap(descendants(in: root).compactMap { $0 as? NSSegmentedControl }.first)
-        XCTAssertEqual(control.label(forSegment: 1), "横向")
-        control.selectedSegment = 0
+        XCTAssertEqual(control.label(forSegment: 0), "自动")
+        XCTAssertEqual(control.label(forSegment: 2), "横向")
+        control.selectedSegment = 1
         NSApp.sendAction(try XCTUnwrap(control.action), to: control.target, from: control)
         XCTAssertEqual(overlay.selectedAxis, .vertical)
         XCTAssertNil(overlay.currentSelection)
+        let automatic = SelectionOverlay(displayRect: CGRect(x: 0, y: 0, width: 1280, height: 800),
+                                         onBegin: { _ in }, onCancel: {})
+        defer { automatic.close() }
+        XCTAssertEqual(automatic.selectedAxis, .automatic)
     }
 
     @MainActor
@@ -359,6 +364,9 @@ final class GlassInterfaceTests: XCTestCase {
         XCTAssertTrue(descendants(in: root).compactMap { $0 as? NSTextField }.contains { $0.stringValue.contains("反向回看") })
         overlay.update(StitchUpdate(action: .grew, height: 920, progress: .recovered))
         XCTAssertTrue(descendants(in: root).compactMap { $0 as? NSTextField }.contains { $0.stringValue.contains("已恢复") })
+        overlay.update(StitchUpdate(action: .stayed, height: 180, axis: .automatic))
+        XCTAssertTrue(descendants(in: root).compactMap { $0 as? NSTextField }.contains { $0.stringValue.contains("自动识别方向") })
+        XCTAssertEqual(panel.frame.height, 72)
     }
 
     @MainActor

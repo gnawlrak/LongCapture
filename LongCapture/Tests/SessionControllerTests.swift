@@ -155,49 +155,52 @@ final class SessionCoordinatorTests: XCTestCase {
 
     func testContinuationKeepsStreamRunningAndFinishDrainsTailForBothAxes() async throws {
         for axis in [CaptureAxis.vertical, .horizontal] {
-            let canvas = TestCanvas(width: 240)
-            let source = FakeFrameSource()
-            let complete = expectation(description: "multi-page result \(axis)")
-            var nextUpdate: XCTestExpectation?
-            let session = SessionCoordinator(sourceFactory: { _, onFrame, _ in
-                source.onFrame = onFrame
-                return source
-            }, onResult: { result in
-                XCTAssertEqual(result.document.axis, axis)
-                XCTAssertFalse(result.incomplete)
-                XCTAssertEqual(result.document.pages.count, 2)
-                do {
-                    for (page, origin) in zip(result.document.pages, [0, 60]) {
-                        let expected = canvas.frame(at: origin, height: 180)
-                        let oriented = axis == .horizontal ? try PixelImage(expected).transposed().cgImage() : expected
-                        try assertPixelsEqual(page.load(), oriented)
-                    }
-                } catch { XCTFail(error.localizedDescription) }
-                complete.fulfill()
-            }, onError: { XCTFail($0.localizedDescription) }, onUpdate: { update in
-                XCTAssertNotEqual(update.action, .hitLimit)
-                nextUpdate?.fulfill()
-            }, controllerFactory: { axis in
-                StitchingController(limits: StitchLimits(maximumPixels: 240 * 180, maximumHeight: 180),
-                                    continuesAtLimit: true, axis: axis)
-            })
-            session.prepareForSelection()
-            await session.beginCapture(geometry: try geometry(), axis: axis)
-            for y in [0, 30, 60, 90] {
-                nextUpdate = expectation(description: "frame \(y) \(axis)")
-                let image = canvas.frame(at: y, height: 120)
-                source.onFrame?(axis == .horizontal ? try PixelImage(image).transposed().cgImage() : image)
-                await fulfillment(of: [try XCTUnwrap(nextUpdate)], timeout: 3)
-                nextUpdate = nil
-                XCTAssertEqual(session.state, .capturing)
-                XCTAssertFalse(source.stopped)
+            for mode in [axis, .automatic] {
+                let canvas = TestCanvas(width: 240)
+                let source = FakeFrameSource()
+                let complete = expectation(description: "multi-page result \(axis)")
+                var nextUpdate: XCTestExpectation?
+                let session = SessionCoordinator(sourceFactory: { _, onFrame, _ in
+                    source.onFrame = onFrame
+                    return source
+                }, onResult: { result in
+                    XCTAssertEqual(result.document.axis, axis)
+                    XCTAssertFalse(result.incomplete)
+                    XCTAssertEqual(result.document.pages.count, 2)
+                    do {
+                        for (page, origin) in zip(result.document.pages, [0, 60]) {
+                            let expected = canvas.frame(at: origin, height: 180)
+                            let oriented = axis == .horizontal ? try PixelImage(expected).transposed().cgImage() : expected
+                            try assertPixelsEqual(page.load(), oriented)
+                        }
+                    } catch { XCTFail(error.localizedDescription) }
+                    complete.fulfill()
+                }, onError: { XCTFail($0.localizedDescription) }, onUpdate: { update in
+                    XCTAssertNotEqual(update.action, .hitLimit)
+                    nextUpdate?.fulfill()
+                }, controllerFactory: { axis in
+                    StitchingController(limits: StitchLimits(maximumPixels: 240 * 180, maximumHeight: 180),
+                                        continuesAtLimit: true, axis: axis)
+                })
+                session.prepareForSelection()
+                if mode == .automatic { await session.beginCapture(geometry: try geometry()) }
+                else { await session.beginCapture(geometry: try geometry(), axis: mode) }
+                for y in [0, 30, 60, 90] {
+                    nextUpdate = expectation(description: "frame \(y) \(axis)")
+                    let image = canvas.frame(at: y, height: 120)
+                    source.onFrame?(axis == .horizontal ? try PixelImage(image).transposed().cgImage() : image)
+                    await fulfillment(of: [try XCTUnwrap(nextUpdate)], timeout: 3)
+                    nextUpdate = nil
+                    XCTAssertEqual(session.state, .capturing)
+                    XCTAssertFalse(source.stopped)
+                }
+                let tail = canvas.frame(at: 120, height: 120)
+                source.onFrame?(axis == .horizontal ? try PixelImage(tail).transposed().cgImage() : tail)
+                await session.complete()
+                await fulfillment(of: [complete], timeout: 4)
+                XCTAssertTrue(source.stopped)
+                XCTAssertEqual(session.state, .result)
             }
-            let tail = canvas.frame(at: 120, height: 120)
-            source.onFrame?(axis == .horizontal ? try PixelImage(tail).transposed().cgImage() : tail)
-            await session.complete()
-            await fulfillment(of: [complete], timeout: 4)
-            XCTAssertTrue(source.stopped)
-            XCTAssertEqual(session.state, .result)
         }
     }
 

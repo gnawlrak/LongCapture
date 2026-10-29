@@ -8,7 +8,7 @@ final class SelectionOverlay: NSWindowController {
     private var resolved = false
 
     init(displayRect: CGRect, safeTopInset: CGFloat? = nil,
-         initialAxis: CaptureAxis = .vertical,
+         initialAxis: CaptureAxis = .automatic,
          onBegin: @escaping (CGRect) -> Void, onCancel: @escaping () -> Void) {
         self.displayRect = displayRect
         self.onBegin = onBegin
@@ -78,8 +78,14 @@ private final class SelectionView: NSView {
     private var initialRect: CGRect = .zero
     private var dragMode: DragMode = .new
     private enum DragMode { case new, move, resize(Int) }
-    private let axisControl = NSSegmentedControl(labels: ["纵向", "横向"], trackingMode: .selectOne, target: nil, action: nil)
-    var axis: CaptureAxis { axisControl.selectedSegment == 1 ? .horizontal : .vertical }
+    private let axisControl = NSSegmentedControl(labels: ["自动", "纵向", "横向"], trackingMode: .selectOne, target: nil, action: nil)
+    var axis: CaptureAxis {
+        switch axisControl.selectedSegment {
+        case 1: return .vertical
+        case 2: return .horizontal
+        default: return .automatic
+        }
+    }
 
     init(frame frameRect: NSRect, safeTopInset: CGFloat, axis: CaptureAxis) {
         super.init(frame: frameRect)
@@ -91,10 +97,10 @@ private final class SelectionView: NSView {
         labels.orientation = .vertical
         labels.alignment = .leading
         labels.spacing = 5
-        axisControl.selectedSegment = axis == .horizontal ? 1 : 0
+        axisControl.selectedSegment = axis == .automatic ? 0 : axis == .vertical ? 1 : 2
         axisControl.target = self
         axisControl.action = #selector(axisChanged)
-        axisControl.setAccessibilityLabel("长截图方向，纵向或横向")
+        axisControl.setAccessibilityLabel("长截图方向，默认自动识别，也可指定纵向或横向")
         labels.addArrangedSubview(axisControl)
         labels.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         let cancel = NSButton(title: "取消", target: self, action: #selector(cancelClicked))
@@ -140,7 +146,11 @@ private final class SelectionView: NSView {
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
     @objc private func axisChanged() {
-        titleLabel.stringValue = axis == .horizontal ? "框选横向滚动区域 · 向左或向右滚动" : "框选纵向滚动区域 · 向上或向下滚动"
+        switch axis {
+        case .automatic: titleLabel.stringValue = "框选后直接滚动 · 自动识别横向或纵向"
+        case .vertical: titleLabel.stringValue = "框选纵向滚动区域 · 向上或向下滚动"
+        case .horizontal: titleLabel.stringValue = "框选横向滚动区域 · 向左或向右滚动"
+        }
         noteLabel.stringValue = "只框正文，避开固定栏和动画；采集中不能混合横纵滚动。"
     }
 

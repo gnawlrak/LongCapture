@@ -118,10 +118,18 @@ final class CaptureOverlay {
     func update(_ update: StitchUpdate) {
         doneButton.isEnabled = true
         status.textColor = update.action == .needsRecovery ? .systemOrange : .labelColor
+        if update.axis == .automatic && update.action != .needsRecovery {
+            status.stringValue = "请直接滚动 · 正在自动识别方向"
+            detail.stringValue = "确认后锁定横向或纵向，无需手动切换"
+            status.toolTip = "沿一个方向滚动；轻微抖动不会立即锁定，已确认的微小位移会在结束时保留。"
+            setSymbol("arrow.up.left.and.arrow.down.right", color: .controlAccentColor)
+            showReference(nil)
+            return
+        }
         let extent = "\(update.axis.title)第 \(update.pageCount) 张 · \(update.height) / \(update.maximumHeight) px"
         if update.action == .needsRecovery {
             status.stringValue = "匹配暂停，请往回滚动恢复"
-            detail.stringValue = "\(extent) · 已确认内容仍保留"
+            detail.stringValue = update.axis == .automatic ? "尚未锁定滚动方向 · 起始画面仍保留" : "\(extent) · 已确认内容仍保留"
             setSymbol("arrow.uturn.backward", color: .systemOrange)
             showReference(update.referenceImage)
         } else {
@@ -137,7 +145,7 @@ final class CaptureOverlay {
             }
             detail.stringValue = extent + (update.height * 100 >= update.maximumHeight * 85
                 ? " · 接近单张上限，将自动续张" : " · 再按快捷键完成")
-            setSymbol(update.progress == .revisiting ? "arrow.uturn.backward" : "arrow.up.and.down", color: .controlAccentColor)
+            setSymbol(update.progress == .revisiting ? "arrow.uturn.backward" : update.axis == .horizontal ? "arrow.left.and.right" : "arrow.up.and.down", color: .controlAccentColor)
         }
         status.toolTip = update.message ?? "再次按截图快捷键或点完成，结束采集。"
     }

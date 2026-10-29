@@ -62,7 +62,7 @@ final class AppController: NSObject {
     }
 
     @objc func beginSelection() {
-        presentSelection(axis: .vertical)
+        presentSelection(axis: .automatic)
     }
 
     @objc private func beginHorizontalSelection() { presentSelection(axis: .horizontal) }

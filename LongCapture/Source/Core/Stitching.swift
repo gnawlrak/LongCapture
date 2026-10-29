@@ -3,9 +3,15 @@ import Foundation
 import Vision
 
 enum CaptureAxis: String, Equatable, Sendable {
-    case vertical, horizontal
-    var title: String { self == .vertical ? "纵向" : "横向" }
-    var lengthTitle: String { self == .vertical ? "高度" : "宽度" }
+    case automatic, vertical, horizontal
+    var title: String {
+        switch self {
+        case .automatic: return "自动"
+        case .vertical: return "纵向"
+        case .horizontal: return "横向"
+        }
+    }
+    var lengthTitle: String { self == .automatic ? "长度" : self == .vertical ? "高度" : "宽度" }
 }
 
 struct StitchLimits: Sendable {

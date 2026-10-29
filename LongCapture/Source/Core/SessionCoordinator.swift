@@ -119,7 +119,7 @@ final class SessionCoordinator {
         state = .selecting
     }
 
-    func beginCapture(geometry: CaptureGeometry, axis: CaptureAxis = .vertical) async {
+    func beginCapture(geometry: CaptureGeometry, axis: CaptureAxis = .automatic) async {
         guard state == .selecting else { return }
         generation &+= 1
         let token = generation

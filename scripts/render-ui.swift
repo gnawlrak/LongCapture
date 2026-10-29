@@ -91,6 +91,8 @@ struct RenderInterface {
             capture.setReady()
             capture.update(StitchUpdate(action: .grew, height: 12840))
             try await render(toolbar, name: "capture-\(label)", appearance: appearance, into: output)
+            capture.update(StitchUpdate(action: .stayed, height: 480, axis: .automatic))
+            try await render(toolbar, name: "capture-auto-\(label)", appearance: appearance, into: output)
             capture.update(StitchUpdate(action: .needsRecovery, height: 12840, progress: .recovering,
                                          referenceImage: image.cgImage(forProposedRect: nil, context: nil, hints: nil).flatMap {
                                              $0.cropping(to: CGRect(x: 0, y: 0, width: $0.width, height: min(560, $0.height)))
@@ -107,7 +109,7 @@ struct RenderInterface {
             try await render(panel, name: "thumbnail-\(label)", appearance: appearance, into: output)
             thumbnail.finish()
         }
-        print("Rendered 20 \(composited ? "composited" : "offscreen") native interface fixtures into \(output.path)")
+        print("Rendered 22 \(composited ? "composited" : "offscreen") native interface fixtures into \(output.path)")
     }
 
     private static var composited: Bool { CommandLine.arguments.contains("--composited") }

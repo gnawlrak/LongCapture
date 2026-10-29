@@ -28,6 +28,168 @@ private final class KnownFramePositionEstimator: OffsetEstimating {
 }
 
 final class StitchingTests: XCTestCase {
+    func testAutomaticAxisUsesRealVisionForBothAxesAndDirections() throws {
+        let canvas = TestCanvas(width: 240)
+        for axis in [CaptureAxis.vertical, .horizontal] {
+            for sign in [1, -1] {
+                let sut = StitchingController(axis: .automatic)
+                func frame(_ y: Int, _ height: Int = 180) throws -> CGImage {
+                    let image = canvas.frame(at: y, height: height)
+                    return axis == .horizontal ? try PixelImage(image).transposed().cgImage() : image
+                }
+                XCTAssertEqual(sut.accept(try frame(300)).axis, .automatic)
+                let locked = sut.accept(try frame(300 + sign * 40))
+                XCTAssertEqual(locked.axis, axis)
+                XCTAssertEqual(locked.action, .grew)
+                XCTAssertEqual(sut.accept(try frame(300 + sign * 20)).action, .stayed)
+                XCTAssertEqual(sut.accept(try frame(300 + sign * 70)).axis, axis)
+                let result = try sut.finish()
+                XCTAssertFalse(result.incomplete)
+                XCTAssertEqual(result.document.axis, axis)
+                try assertPixelsEqual(result.image, frame(sign == 1 ? 300 : 230, 250))
+            }
+        }
+    }
+
+    func testAutomaticAxisAccumulatesTinyMotionAndFlushesConfirmedTail() throws {
+        let canvas = TestCanvas()
+        for axis in [CaptureAxis.vertical, .horizontal] {
+            for sign in [1, -1] {
+                for end in [3, 4] {
+                    let shifts: [Int?] = (1...end).flatMap {
+                        axis == .vertical ? [Optional(sign * $0), nil] : [nil, Optional(sign * $0)]
+                    }
+                    let sut = StitchingController(estimator: ScriptedEstimator(shifts), axis: .automatic)
+                    func frame(_ y: Int, _ height: Int = 120) throws -> CGImage {
+                        let image = canvas.frame(at: y, height: height)
+                        return axis == .horizontal ? try PixelImage(image).transposed().cgImage() : image
+                    }
+                    _ = sut.accept(try frame(300))
+                    for y in 1...end {
+                        let update = sut.accept(try frame(300 + sign * y))
+                        XCTAssertEqual(update.axis, y < 4 ? .automatic : axis)
+                    }
+                    let result = try sut.finish()
+                    XCTAssertFalse(result.incomplete)
+                    try assertPixelsEqual(result.image, frame(sign == 1 ? 300 : 300 - end, 120 + end))
+                    XCTAssertEqual(sut.retainedPixelBytes, 0)
+                }
+            }
+        }
+    }
+
+    func testAutomaticAxisDoesNotLockOnJitterBlankOrDuplicateFrames() throws {
+        let canvas = TestCanvas(width: 240, height: 600)
+        let whole = canvas.frame(at: 0, height: 600)
+        func crop(_ x: Int, _ y: Int) throws -> CGImage {
+            try XCTUnwrap(whole.cropping(to: CGRect(x: x, y: y, width: 160, height: 180)))
+        }
+        let sut = StitchingController(axis: .automatic)
+        _ = sut.accept(try crop(0, 0))
+        XCTAssertEqual(sut.accept(try crop(0, 1)).axis, .automatic)
+        XCTAssertEqual(sut.accept(try crop(0, 0)).axis, .automatic)
+        XCTAssertEqual(sut.accept(try crop(30, 0)).axis, .horizontal)
+        try assertPixelsEqual(sut.finish().image, XCTUnwrap(whole.cropping(to: CGRect(x: 0, y: 0, width: 190, height: 180))))
+        let blank = TestCanvas.blank()
+        let idle = StitchingController(axis: .automatic)
+        for _ in 0..<4 { XCTAssertEqual(idle.accept(blank).axis, .automatic) }
+        let result = try idle.finish()
+        XCTAssertFalse(result.incomplete)
+        try assertPixelsEqual(result.image, blank)
+    }
+
+    func testAutomaticAxisRejectsDiagonalAndRetainsAnchorForRecovery() throws {
+        let whole = TestCanvas(width: 600, height: 600).frame(at: 0, height: 600)
+        func crop(_ x: Int, _ y: Int) throws -> CGImage {
+            try XCTUnwrap(whole.cropping(to: CGRect(x: x, y: y, width: 240, height: 180)))
+        }
+        let sut = StitchingController(axis: .automatic)
+        _ = sut.accept(try crop(0, 0))
+        let bad = sut.accept(try crop(25, 25))
+        XCTAssertEqual(bad.axis, .automatic)
+        XCTAssertEqual(bad.action, .needsRecovery)
+        XCTAssertNotNil(bad.referenceImage)
+        XCTAssertEqual(sut.accept(try crop(0, 40)).axis, .vertical)
+        // Once locked, perpendicular movement cannot switch axes or skip a gap.
+        XCTAssertEqual(sut.accept(try crop(40, 40)).action, .needsRecovery)
+        XCTAssertEqual(sut.accept(try crop(0, 60)).axis, .vertical)
+        let result = try sut.finish()
+        XCTAssertFalse(result.incomplete)
+        try assertPixelsEqual(result.image, XCTUnwrap(whole.cropping(to: CGRect(x: 0, y: 0, width: 240, height: 240))))
+    }
+
+    func testAutomaticAxisFailurePreservesConfirmedTinyTailAndIncompleteNotice() throws {
+        let canvas = TestCanvas()
+        let sut = StitchingController(estimator: ScriptedEstimator([2, nil, nil, nil]), axis: .automatic)
+        _ = sut.accept(canvas.frame(at: 0, height: 120))
+        _ = sut.accept(canvas.frame(at: 2, height: 120))
+        XCTAssertEqual(sut.accept(canvas.frame(at: 600, height: 120)).action, .needsRecovery)
+        let result = try sut.finish()
+        XCTAssertTrue(result.incomplete)
+        try assertPixelsEqual(result.image, canvas.frame(at: 0, height: 122))
+        let cancelled = StitchingController(axis: .automatic)
+        _ = cancelled.accept(canvas.frame(at: 0, height: 120))
+        cancelled.cancel()
+        XCTAssertEqual(cancelled.retainedPixelBytes, 0)
+        XCTAssertEqual(cancelled.accept(canvas.frame(at: 10, height: 120)).action, .rejected)
+        XCTAssertThrowsError(try cancelled.finish())
+        let recovered = StitchingController(estimator: ScriptedEstimator([nil, nil, 0, 0]), axis: .automatic)
+        let anchor = canvas.frame(at: 0, height: 120)
+        _ = recovered.accept(anchor)
+        XCTAssertEqual(recovered.accept(canvas.frame(at: 600, height: 120)).action, .needsRecovery)
+        var pixels = try PixelImage(anchor).pixels
+        pixels[0] ^= 1
+        let almostIdentical = TestCanvas.image(width: canvas.width, height: 120, pixels: pixels)
+        XCTAssertEqual(recovered.accept(almostIdentical).axis, .automatic)
+        XCTAssertFalse(try recovered.finish().incomplete)
+    }
+
+    func testAutomaticAxisRejectsTwoPlausibleAxesAndUnrelatedFrames() throws {
+        func diagonal(_ offset: Int) -> CGImage {
+            var pixels = [UInt8](repeating: 255, count: 160 * 160 * 4)
+            for y in 0..<160 {
+                for x in 0..<160 {
+                    let value = UInt8(((x + y + offset) * 73) % 251)
+                    for channel in 0..<3 { pixels[(y * 160 + x) * 4 + channel] = value }
+                }
+            }
+            return TestCanvas.image(width: 160, height: 160, pixels: Data(pixels))
+        }
+        let initial = diagonal(0)
+        let ambiguous = StitchingController(estimator: ScriptedEstimator([20, 20]), axis: .automatic)
+        _ = ambiguous.accept(initial)
+        let update = ambiguous.accept(diagonal(20))
+        XCTAssertEqual(update.axis, .automatic)
+        XCTAssertEqual(update.action, .needsRecovery)
+        let result = try ambiguous.finish()
+        XCTAssertTrue(result.incomplete)
+        try assertPixelsEqual(result.image, initial)
+
+        let canvas = TestCanvas()
+        let unmatched = StitchingController(axis: .automatic)
+        _ = unmatched.accept(canvas.frame(at: 0, height: 180))
+        XCTAssertEqual(unmatched.accept(canvas.frame(at: 600, height: 180)).action, .needsRecovery)
+        XCTAssertTrue(try unmatched.finish().incomplete)
+        let repeated = StitchingController(axis: .automatic)
+        let pattern = TestCanvas(repeatedPeriod: 20)
+        _ = repeated.accept(pattern.frame(at: 0, height: 180))
+        XCTAssertEqual(repeated.accept(pattern.frame(at: 40, height: 180)).axis, .automatic)
+    }
+
+    func testAutomaticAxisRespectsLimitsAfterResolvingOrientationAndWithoutMovement() throws {
+        let canvas = TestCanvas(width: 240)
+        let limits = StitchLimits(maximumPixels: 240 * 130, maximumHeight: 130)
+        let sut = StitchingController(limits: limits, continuesAtLimit: true, axis: .automatic)
+        _ = sut.accept(canvas.frame(at: 0, height: 180))
+        XCTAssertEqual(sut.accept(canvas.frame(at: 20, height: 180)).action, .hitLimit)
+        let result = try sut.finish()
+        XCTAssertTrue(result.incomplete)
+        try assertPixelsEqual(result.image, canvas.frame(at: 0, height: 130))
+        let idle = StitchingController(limits: limits, axis: .automatic)
+        _ = idle.accept(canvas.frame(at: 0, height: 180))
+        XCTAssertTrue(try idle.finish().incomplete)
+    }
+
     func testDownwardOutputHasExactPixelsNotOnlyHeight() throws {
         let canvas = TestCanvas()
         let sut = StitchingController(estimator: ScriptedEstimator([20, 35, 15]))

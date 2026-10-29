@@ -6,7 +6,8 @@ final class StitchingController {
     private let estimator: any OffsetEstimating
     private let limits: StitchLimits
     private let continuesAtLimit: Bool
-    private let axis: CaptureAxis
+    private var axis: CaptureAxis
+    private var pendingAxisFrame: (frame: PixelImage, axis: CaptureAxis, shift: Int)?
     private var archive: CapturePageArchive?
     private var pages: [CapturePage] = []
     private var state: StitchState?
@@ -21,7 +22,8 @@ final class StitchingController {
     private var carryoverRows = 0
     private let limitMessage = "单帧已达到图像上限，请缩小选区后重新截图。"
     var retainedPixelBytes: Int {
-        (state?.retainedPixelBytes ?? 0) + (lastReliable?.pixels.count ?? 0) + pages.reduce(0) { $0 + $1.retainedPixelBytes }
+        (state?.retainedPixelBytes ?? 0) + (lastReliable?.pixels.count ?? 0) +
+            (pendingAxisFrame?.frame.pixels.count ?? 0) + pages.reduce(0) { $0 + $1.retainedPixelBytes }
     }
 
     init(estimator: any OffsetEstimating = VisionOffsetEstimator(), limits: StitchLimits = .default,
@@ -37,51 +39,122 @@ final class StitchingController {
         if stopped || state?.atLimit == true { return update(.hitLimit, message: recoveryMessage ?? limitMessage) }
         do {
             let sourceFrame = try PixelImage(image)
+            if axis == .automatic { return try acceptAutomatic(sourceFrame) }
             let frame = axis == .horizontal ? try sourceFrame.transposed() : sourceFrame
-            guard let previous = lastReliable else {
-                clearRecovery()
-                state = try StitchState(first: frame, limits: limits)
-                lastReliable = state?.atLimit == true ? nil : frame
-                if state?.atLimit == true {
-                    stopped = true
-                    recoveryMessage = continuesAtLimit ? limitMessage : "已达到图像上限，已保留确认部分。"
-                    return update(.hitLimit, message: recoveryMessage)
-                }
-                return update(.grew)
-            }
-            guard frame.width == previous.width, frame.height == previous.height else {
-                return recover("画面尺寸发生变化，请恢复原窗口大小或结束截图。")
-            }
-            let wasRecovering = recoveryMessage != nil
-            if frame.pixels == previous.pixels {
-                clearRecovery()
-                return update(.stayed, progress: wasRecovering ? .recovered : idleProgress)
-            }
-            let estimate = estimator.estimate(previous: previous, current: frame)
-            guard let shift = estimate.shift, shift > -frame.height, shift < frame.height else {
-                return recover(estimate.message ?? "重叠或纹理证据不足，请往回滚到参考画面，再减小滚动幅度。")
-            }
-            guard OverlapValidator().score(previous, frame, shift: shift).isReliable else {
-                return recover("无法确认正文重叠，请往回滚到参考画面，再减小滚动幅度。")
-            }
-            // Retain the integer anchor so subpixel motion can accumulate.
-            if shift == 0 {
-                clearRecovery()
-                return update(.stayed, progress: wasRecovering ? .recovered : idleProgress)
-            }
-            let action = state?.accept(frame, shift: shift) ?? .rejected
-            if action == .needsRecovery || action == .rejected {
-                return recover("接缝未能通过校验，请往回滚到参考画面后继续。")
-            }
-            absolutePosition += shift
-            clearRecovery()
-            if action == .hitLimit, continuesAtLimit {
-                return try continuePage(with: frame)
-            }
-            lastReliable = state?.atLimit == true ? nil : frame
-            return update(action, message: action == .hitLimit ? "已达到图像上限，已保留确认部分。" : nil,
-                          progress: wasRecovering ? .recovered : action == .stayed ? idleProgress : .growing)
+            return try acceptFrame(frame)
         } catch { return recover(error.localizedDescription) }
+    }
+
+    private func acceptAutomatic(_ frame: PixelImage) throws -> StitchUpdate {
+        guard let previous = lastReliable else {
+            lastReliable = frame
+            return update(.grew, progress: .unchanged)
+        }
+        guard previous.width == frame.width, previous.height == frame.height else {
+            return recover("画面尺寸发生变化，请恢复原窗口大小或结束截图。")
+        }
+        if previous.pixels == frame.pixels {
+            pendingAxisFrame = nil
+            clearRecovery()
+            return update(.stayed, progress: .unchanged)
+        }
+        var candidates: [(axis: CaptureAxis, shift: Int)] = []
+        var stationary = false
+        for direction in [CaptureAxis.vertical, .horizontal] {
+            let old = direction == .horizontal ? try previous.transposed() : previous
+            let current = direction == .horizontal ? try frame.transposed() : frame
+            guard let shift = estimator.estimate(previous: old, current: current).shift,
+                  shift > -current.height, shift < current.height,
+                  OverlapValidator().score(old, current, shift: shift).isReliable else { continue }
+            if shift == 0 { stationary = true }
+            else { candidates.append((direction, shift)) }
+        }
+        guard candidates.count == 1, let candidate = candidates.first else {
+            if candidates.isEmpty && stationary {
+                clearRecovery()
+                return update(.stayed, progress: .unchanged)
+            }
+            return recover("暂时无法确认滚动方向，请回到参考画面，再沿一个方向小幅滚动。")
+        }
+        // Keep the original anchor: tiny movements accumulate without locking on a one-pixel wobble.
+        // A confirmed tiny tail is flushed at Finish even if the locking threshold is never reached.
+        pendingAxisFrame = (frame, candidate.axis, candidate.shift)
+        if abs(candidate.shift) < 4 {
+            clearRecovery()
+            return update(.stayed, progress: .unchanged)
+        }
+        return try lockAutomatic(frame: frame, axis: candidate.axis, shift: candidate.shift)
+    }
+
+    private func lockAutomatic(frame: PixelImage, axis selected: CaptureAxis, shift: Int) throws -> StitchUpdate {
+        guard let previous = lastReliable else { throw StitchError.noContent }
+        let old = selected == .horizontal ? try previous.transposed() : previous
+        let current = selected == .horizontal ? try frame.transposed() : frame
+        let initial = try StitchState(first: old, limits: limits)
+        if !initial.atLimit {
+            var probe = initial
+            let action = probe.accept(current, shift: shift)
+            guard action != .needsRecovery, action != .rejected else {
+                pendingAxisFrame = nil
+                return recover("接缝未能通过校验，请回到参考画面后继续。")
+            }
+        }
+        axis = selected
+        state = initial
+        lastReliable = old
+        pendingAxisFrame = nil
+        if initial.atLimit {
+            stopped = true
+            recoveryMessage = limitMessage
+            return update(.hitLimit, message: limitMessage)
+        }
+        return try acceptFrame(current, knownEstimate: MoveEstimate(shift: shift))
+    }
+
+    private func acceptFrame(_ frame: PixelImage, knownEstimate: MoveEstimate? = nil) throws -> StitchUpdate {
+        guard let previous = lastReliable else {
+            clearRecovery()
+            state = try StitchState(first: frame, limits: limits)
+            lastReliable = state?.atLimit == true ? nil : frame
+            if state?.atLimit == true {
+                stopped = true
+                recoveryMessage = continuesAtLimit ? limitMessage : "已达到图像上限，已保留确认部分。"
+                return update(.hitLimit, message: recoveryMessage)
+            }
+            return update(.grew)
+        }
+        guard frame.width == previous.width, frame.height == previous.height else {
+            return recover("画面尺寸发生变化，请恢复原窗口大小或结束截图。")
+        }
+        let wasRecovering = recoveryMessage != nil
+        if frame.pixels == previous.pixels {
+            clearRecovery()
+            return update(.stayed, progress: wasRecovering ? .recovered : idleProgress)
+        }
+        let estimate = knownEstimate ?? estimator.estimate(previous: previous, current: frame)
+        guard let shift = estimate.shift, shift > -frame.height, shift < frame.height else {
+            return recover(estimate.message ?? "重叠或纹理证据不足，请往回滚到参考画面，再减小滚动幅度。")
+        }
+        guard OverlapValidator().score(previous, frame, shift: shift).isReliable else {
+            return recover("无法确认正文重叠，请往回滚到参考画面，再减小滚动幅度。")
+        }
+        // Retain the integer anchor so subpixel motion can accumulate.
+        if shift == 0 {
+            clearRecovery()
+            return update(.stayed, progress: wasRecovering ? .recovered : idleProgress)
+        }
+        let action = state?.accept(frame, shift: shift) ?? .rejected
+        if action == .needsRecovery || action == .rejected {
+            return recover("接缝未能通过校验，请往回滚到参考画面后继续。")
+        }
+        absolutePosition += shift
+        clearRecovery()
+        if action == .hitLimit, continuesAtLimit {
+            return try continuePage(with: frame)
+        }
+        lastReliable = state?.atLimit == true ? nil : frame
+        return update(action, message: action == .hitLimit ? "已达到图像上限，已保留确认部分。" : nil,
+                      progress: wasRecovering ? .recovered : action == .stayed ? idleProgress : .growing)
     }
 
     private func continuePage(with frame: PixelImage) throws -> StitchUpdate {
@@ -113,6 +186,17 @@ final class StitchingController {
     func finish() throws -> StitchedCapture {
         guard !cancelled else { throw StitchError.cancelled }
         guard !terminal else { throw StitchError.alreadyFinished }
+        if axis == .automatic, let anchor = lastReliable {
+            if let pending = pendingAxisFrame {
+                let warning = recoveryMessage
+                _ = try lockAutomatic(frame: pending.frame, axis: pending.axis, shift: pending.shift)
+                if let warning { recoveryMessage = warning }
+            }
+            if state == nil {
+                axis = .vertical
+                state = try StitchState(first: anchor, limits: limits)
+            }
+        }
         guard let state else { throw StitchError.noContent }
         var resultPages = pages
         if pages.isEmpty || state.imageHeight > carryoverRows {
@@ -124,13 +208,13 @@ final class StitchingController {
         let reason = recoveryMessage ?? (state.atLimit ? "已达到图像上限，已保留确认部分。" : nil)
         let result = StitchedCapture(image: firstImage, incomplete: reason != nil, reason: reason, document: document)
         terminal = true
-        self.state = nil; lastReliable = nil; pages = []; archive = nil
+        self.state = nil; lastReliable = nil; pendingAxisFrame = nil; pages = []; archive = nil
         return result
     }
 
     func cancel() {
         cancelled = true; terminal = true
-        state = nil; lastReliable = nil; recoveryMessage = nil; referenceImage = nil
+        state = nil; lastReliable = nil; pendingAxisFrame = nil; recoveryMessage = nil; referenceImage = nil
         pages = []; archive?.cleanup(); archive = nil
     }
 
@@ -166,7 +250,7 @@ final class StitchingController {
 
     private func update(_ action: StitchAction, message: String? = nil,
                         progress: StitchProgress = .growing) -> StitchUpdate {
-        StitchUpdate(action: action, height: state?.imageHeight ?? 0, message: message, progress: progress,
+        StitchUpdate(action: action, height: state?.imageHeight ?? lastReliable?.height ?? 0, message: message, progress: progress,
                      referenceImage: referenceImage, pageCount: pages.count + 1,
                      maximumHeight: state?.maximumHeight ?? limits.maximumHeight, axis: axis)
     }
