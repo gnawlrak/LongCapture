@@ -81,6 +81,40 @@ private final class FrameRecorder: @unchecked Sendable {
 
 @MainActor
 final class SessionCoordinatorTests: XCTestCase {
+    func testFrozenHorizontalTableKeepsHeaderOnceAndDrainsTail() async throws {
+        let canvas = TableTestCanvas(axis: .horizontal)
+        let source = FakeFrameSource()
+        let completed = expectation(description: "frozen table result")
+        var nextUpdate: XCTestExpectation?
+        let session = SessionCoordinator(sourceFactory: { _, onFrame, _ in
+            source.onFrame = onFrame
+            return source
+        }, onResult: { result in
+            XCTAssertFalse(result.incomplete)
+            XCTAssertEqual(result.document.axis, .horizontal)
+            do { try assertPixelsEqual(result.image, canvas.frame(at: 500, length: 1_280, leading: 280)) }
+            catch { XCTFail(error.localizedDescription) }
+            completed.fulfill()
+        }, onError: { XCTFail($0.localizedDescription) }, onUpdate: { update in
+            XCTAssertNotEqual(update.action, .needsRecovery, update.message ?? "")
+            nextUpdate?.fulfill()
+        })
+        session.prepareForSelection()
+        await session.beginCapture(geometry: try geometry())
+        for x in stride(from: 500, through: 900, by: 80) {
+            nextUpdate = expectation(description: "frozen table frame \(x)")
+            source.onFrame?(try canvas.frame(at: x, leading: 280))
+            await fulfillment(of: [try XCTUnwrap(nextUpdate)], timeout: 4)
+            nextUpdate = nil
+            XCTAssertEqual(session.state, .capturing)
+        }
+        source.onFrame?(try canvas.frame(at: 980, leading: 280))
+        await session.complete()
+        await fulfillment(of: [completed], timeout: 4)
+        XCTAssertTrue(source.stopped)
+        XCTAssertEqual(session.state, .result)
+    }
+
     func testPermissionDeniedReturnsToIdleAndReportsError() async throws {
         let errorReported = expectation(description: "error")
         let session = SessionCoordinator(sourceFactory: { _, _, _ in

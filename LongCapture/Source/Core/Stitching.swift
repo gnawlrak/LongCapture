@@ -14,6 +14,17 @@ enum CaptureAxis: String, Equatable, Sendable {
     var lengthTitle: String { self == .automatic ? "长度" : self == .vertical ? "高度" : "宽度" }
 }
 
+/// Viewport-fixed bands along the normalized scrolling axis; pixels are retained, not cropped.
+struct MatchingInsets: Equatable {
+    var leading = 0
+    var trailing = 0
+    static let none = MatchingInsets()
+    var isEmpty: Bool { leading == 0 && trailing == 0 }
+    func merged(with other: MatchingInsets) -> MatchingInsets {
+        MatchingInsets(leading: max(leading, other.leading), trailing: max(trailing, other.trailing))
+    }
+}
+
 struct StitchLimits: Sendable {
     var maximumPixels = 64_000_000
     var maximumHeight = 50_000
@@ -90,11 +101,13 @@ struct PixelImage {
     let width: Int
     let height: Int
     let pixels: Data
+    let matchingInsets: MatchingInsets
     var bytesPerRow: Int { width * 4 }
 
     init(_ image: CGImage) throws {
         let width = image.width, height = image.height
         self.width = width; self.height = height
+        matchingInsets = .none
         guard width > 0, height > 0, width <= Int.max / 4 / height else { throw StitchError.invalidFrame }
         let rowBytes = width * 4
         let byteOrder = image.bitmapInfo.intersection(.byteOrderMask)
@@ -156,8 +169,13 @@ struct PixelImage {
         return PixelImage(width: height, height: width, pixels: output)
     }
 
-    fileprivate init(width: Int, height: Int, pixels: Data) {
+    func withMatchingInsets(_ insets: MatchingInsets) -> PixelImage {
+        PixelImage(width: width, height: height, pixels: pixels, matchingInsets: insets)
+    }
+
+    fileprivate init(width: Int, height: Int, pixels: Data, matchingInsets: MatchingInsets = .none) {
         self.width = width; self.height = height; self.pixels = pixels
+        self.matchingInsets = matchingInsets
     }
 
     static func makeImage(width: Int, height: Int, pixels: Data) throws -> CGImage {
@@ -169,6 +187,64 @@ struct PixelImage {
                                   provider: provider, decode: nil, shouldInterpolate: false,
                                   intent: .defaultIntent) else { throw StitchError.renderFailed }
         return image
+    }
+}
+
+/// A proposal only: independent moving-body registration and a seam must still validate it.
+enum FrozenEdgeDetector {
+    static func detect(previous: PixelImage, current: PixelImage) -> MatchingInsets {
+        guard previous.width == current.width, previous.height == current.height else { return .none }
+        let width = current.width, height = current.height, maximum = height / 2
+        guard width > 2, maximum > 2 else { return .none }
+        return previous.pixels.withUnsafeBytes { oldRaw in
+            current.pixels.withUnsafeBytes { newRaw in
+                let old = oldRaw.bindMemory(to: UInt8.self), new = newRaw.bindMemory(to: UInt8.self)
+                let nx = min(128, width - 1)
+                func stationary(_ y: Int) -> Bool {
+                    var squared = 0
+                    for ix in 0..<nx {
+                        let p = (y * width + ix * (width - 1) / nx) * 4
+                        for c in 0..<3 {
+                            let difference = abs(Int(old[p + c]) - Int(new[p + c]))
+                            if difference > 2 { return false }
+                            squared += difference * difference
+                        }
+                    }
+                    return squared <= nx * 3
+                }
+                func informative(_ rows: Range<Int>) -> Bool {
+                    guard rows.count > 2 else { return false }
+                    let ny = min(128, rows.count - 1)
+                    var edges = 0, bands = Set<Int>()
+                    for iy in 0..<ny {
+                        let y = rows.lowerBound + iy * (rows.count - 1) / ny
+                        for ix in 0..<nx {
+                            let p = (y * width + ix * (width - 1) / nx) * 4
+                            var edge = 0
+                            for c in 0..<3 {
+                                edge += abs(Int(new[p + c]) - Int(new[p + 4 + c])) +
+                                    abs(Int(new[p + c]) - Int(new[p + width * 4 + c]))
+                            }
+                            if edge > 48 { edges += 1; bands.insert(iy * 4 / ny) }
+                        }
+                    }
+                    return edges >= 24 && bands.count >= 2
+                }
+                var leading = 0, trailing = 0
+                while leading < maximum, stationary(leading) { leading += 1 }
+                while trailing < maximum, stationary(height - trailing - 1) { trailing += 1 }
+                if leading == maximum, trailing == maximum, height % 2 == 0 || stationary(maximum) { return .none }
+                if leading <= height / 6 + 2 || !informative(0..<leading) { leading = 0 }
+                if trailing <= height / 6 + 2 || !informative((height - trailing)..<height) { trailing = 0 }
+                guard leading > 0 || trailing > 0 else { return .none }
+                // Too little moving body must fail closed, not fall back to matching the static header.
+                guard leading < maximum, trailing < maximum,
+                      height - leading - trailing >= max(96, height / 3) else {
+                    return MatchingInsets(leading: height)
+                }
+                return MatchingInsets(leading: leading, trailing: trailing)
+            }
+        }
     }
 }
 
@@ -191,6 +267,7 @@ struct StitchState {
     private(set) var lowerBound: Int
     private(set) var position = 0
     private(set) var atLimit: Bool
+    private(set) var matchingInsets: MatchingInsets
     var imageHeight: Int { lowerBound - upperBound }
     var retainedPixelBytes: Int {
         strips.reduce(0) { $0 + $1.pixels.count } + (frontier?.frame.pixels.count ?? 0)
@@ -199,6 +276,7 @@ struct StitchState {
     init(first: PixelImage, limits: StitchLimits, direction: StitchDirection? = nil) throws {
         self.direction = direction
         width = first.width; frameHeight = first.height
+        matchingInsets = first.matchingInsets
         maximumHeight = limits.height(forWidth: first.width)
         guard maximumHeight > 0 else { throw StitchError.invalidFrame }
         lowerBound = min(first.height, maximumHeight)
@@ -239,6 +317,7 @@ struct StitchState {
             upperBound = newTop
             frontier = Frontier(frame: frame, position: nextPosition, start: newTop, end: seam)
         }
+        matchingInsets = matchingInsets.merged(with: frame.matchingInsets)
         position = nextPosition
         direction = nextDirection
         atLimit = imageHeight == maximumHeight
@@ -250,7 +329,8 @@ struct StitchState {
         let shift = position - old.position
         let validator = OverlapValidator()
         guard validator.score(old.frame, frame, shift: shift).isReliable,
-              let rows = validator.contentRows(height: frameHeight, shift: shift) else { return nil }
+              let rows = validator.contentRows(height: frameHeight, shift: shift,
+                  insets: old.frame.matchingInsets.merged(with: frame.matchingInsets)) else { return nil }
         let start = max(rows.lowerBound, old.start - position)
         let end = min(rows.upperBound, old.end - position)
         guard start < end else { return nil }
@@ -303,7 +383,7 @@ struct StitchState {
                 }
             }
         }
-        return PixelImage(width: width, height: frameHeight, pixels: pixels)
+        return PixelImage(width: width, height: frameHeight, pixels: pixels, matchingInsets: matchingInsets)
     }
 
     func makeRecoveryIndex() -> RecoveryIndex {
@@ -370,8 +450,10 @@ struct RecoveryIndex {
         let points: [Point] = frame.pixels.withUnsafeBytes { raw in
             let bytes = raw.bindMemory(to: UInt8.self)
             var points: [Point] = []
-            let margin = frame.height / 6
-            for y in stride(from: margin, to: frame.height - margin - 2, by: max(1, frame.height / 128)) {
+            let start = max(frame.height / 6, frame.matchingInsets.leading)
+            let end = frame.height - max(frame.height / 6, frame.matchingInsets.trailing)
+            guard end - start > 2 else { return [] }
+            for y in stride(from: start, to: end - 2, by: max(1, (end - start) / 128)) {
                 for (index, x) in columns.enumerated() {
                     let p = y * frame.bytesPerRow + x * 4
                     var edge = 0
@@ -379,7 +461,7 @@ struct RecoveryIndex {
                         edge += abs(Int(bytes[p + c]) - Int(bytes[p + 4 + c]))
                         edge += abs(Int(bytes[p + c]) - Int(bytes[p + frame.bytesPerRow + c]))
                     }
-                    if x + 16 < frame.width, y + 16 < frame.height - margin {
+                    if x + 16 < frame.width, y + 16 < end {
                         edge = max(edge, ImageTexture.curvature(bytes, at: p, step: 4) +
                                    ImageTexture.curvature(bytes, at: p, step: frame.bytesPerRow))
                     }
@@ -446,10 +528,15 @@ struct VisionOffsetEstimator: OffsetEstimating {
         }
         do {
             let old = try previous.cgImage(), new = try current.cgImage()
+            let insets = previous.matchingInsets.merged(with: current.matchingInsets)
+            guard let body = validator.contentRows(height: current.height, shift: 0, insets: insets) else {
+                return unreliable()
+            }
+            let visionRows = insets.isEmpty ? 0..<current.height : body
             let laneWidth = previous.width / 3
             var candidates: [Double] = []
             for lane in 0..<3 {
-                let rect = CGRect(x: lane * laneWidth, y: 0, width: laneWidth, height: previous.height)
+                let rect = CGRect(x: lane * laneWidth, y: visionRows.lowerBound, width: laneWidth, height: visionRows.count)
                 guard let reference = old.cropping(to: rect), let target = new.cropping(to: rect) else { continue }
                 let request = VNTranslationalImageRegistrationRequest(targetedCGImage: target)
                 do { try VNImageRequestHandler(cgImage: reference, options: [:]).perform([request]) }
@@ -476,7 +563,7 @@ struct VisionOffsetEstimator: OffsetEstimating {
             var matches: [Match] = []
             var best: Match?
             // Pixel search also tests offsets Vision missed; it cannot bypass texture or ambiguity gates.
-            for shift in search where validator.contentRows(height: current.height, shift: shift) != nil {
+            for shift in search where validator.contentRows(height: current.height, shift: shift, insets: insets) != nil {
                 let cutoff = min(0.12, max(0.028, 0.020 + (best?.mean ?? 0.05) * 2))
                 let score = sampledError(previous, current, shift: shift, points: samples, cutoff: cutoff)
                 let match = (shift: shift, mean: score.mean, badFraction: score.badFraction, maximumError: score.maximumError)
@@ -493,19 +580,25 @@ struct VisionOffsetEstimator: OffsetEstimating {
                 var exactShift: Int?
                 for match in alternatives {
                     let score = sampledError(previous, current, shift: match.shift, points: detailSamples, cutoff: 0.12)
-                    if score.mean == 0 {
+                    let overlap = validator.score(previous, current, shift: match.shift)
+                    guard overlap.isReliable else { continue }
+                    let mean = max(score.mean, overlap.mean), bad = max(score.badFraction, overlap.badFraction)
+                    if mean == 0 {
                         if let exactShift, abs(exactShift - match.shift) > 2 { return ambiguous() }
                         exactShift = match.shift
                     }
-                    refined.append((match.shift, score.mean, score.badFraction, score.maximumError))
+                    refined.append((match.shift, mean, bad, score.maximumError))
                 }
                 guard let winner = refined.min(by: { $0.mean < $1.mean }) else { return unreliable() }
                 best = winner
+                // Independently quantized screen frames can differ by two levels, but RMS must stay within one.
+                let quantizationLimited = best.maximumError <= 2 &&
+                    validator.score(previous, current, shift: best.shift).nearLossless
                 for match in refined where abs(match.shift - best.shift) > 2 &&
                     match.mean <= 0.020 + best.mean * 2 && match.badFraction < 0.16 {
                     guard validator.score(previous, current, shift: match.shift).isReliable else { continue }
                     if !distinguishes(previous, current, best: best.shift, alternative: match.shift,
-                                      quantizationLimited: best.maximumError <= 1, points: detailSamples) {
+                                      quantizationLimited: quantizationLimited, points: detailSamples) {
                         return ambiguous()
                     }
                 }
@@ -527,16 +620,19 @@ struct VisionOffsetEstimator: OffsetEstimating {
     private struct SamplePoint { let x: Int; let y: Int }
 
     private func textureSamples(in image: PixelImage, dense: Bool = false, alternatePhase: Bool = false) -> [SamplePoint] {
+        let start = max(image.height / 6, image.matchingInsets.leading)
+        let end = image.height - max(image.height / 6, image.matchingInsets.trailing)
         let xStep = max(1, image.width / (dense ? 256 : 96))
-        let yStep = max(1, image.height / (dense ? 256 : 128))
+        let sampledHeight = image.matchingInsets.isEmpty ? image.height : end - start
+        let yStep = max(1, sampledHeight / (dense ? 256 : 128))
         let xPhase = alternatePhase && xStep > 1 ? xStep / 2 : 0
         let yPhase = alternatePhase && xStep == 1 && yStep > 1 ? yStep / 2 : 0
         if alternatePhase, xPhase == 0, yPhase == 0 { return [] }
         return image.pixels.withUnsafeBytes { raw -> [SamplePoint] in
             let bytes = raw.bindMemory(to: UInt8.self)
             var result: [SamplePoint] = []
-            let margin = image.height / 6
-            for y in stride(from: margin + yPhase, to: image.height - margin - 2, by: yStep) {
+            guard end - start > 2 else { return [] }
+            for y in stride(from: start + yPhase, to: end - 2, by: yStep) {
                 for x in stride(from: xPhase, to: image.width - 2, by: xStep) {
                     let p = y * image.bytesPerRow + x * 4
                     var edge = 0
@@ -546,7 +642,7 @@ struct VisionOffsetEstimator: OffsetEstimating {
                         edge += max(abs(Int(bytes[p + c]) - Int(bytes[p + image.bytesPerRow + c])),
                                     abs(Int(bytes[p + c]) - Int(bytes[p + 2 * image.bytesPerRow + c])))
                     }
-                    if x + 16 < image.width, y + 16 < image.height - margin {
+                    if x + 16 < image.width, y + 16 < end {
                         edge = max(edge, ImageTexture.curvature(bytes, at: p, step: 4) +
                                    ImageTexture.curvature(bytes, at: p, step: image.bytesPerRow))
                     }
@@ -560,11 +656,14 @@ struct VisionOffsetEstimator: OffsetEstimating {
     /// A few differing glyphs are evidence only if they independently rule out the alias across the overlap.
     private func distinguishes(_ previous: PixelImage, _ current: PixelImage, best: Int, alternative: Int,
                                quantizationLimited: Bool, points: [SamplePoint], canRefine: Bool = true) -> Bool {
-        guard let bestRows = validator.contentRows(height: current.height, shift: best),
-              let otherRows = validator.contentRows(height: current.height, shift: alternative) else { return false }
-        // A match within one quantization level can rule out a shorter, contradictory fragment.
+        let insets = previous.matchingInsets.merged(with: current.matchingInsets)
+        guard let bestRows = validator.contentRows(height: current.height, shift: best, insets: insets),
+              let otherRows = validator.contentRows(height: current.height, shift: alternative, insets: insets) else { return false }
+        // A near-lossless match can rule out a shorter, contradictory fragment.
         // A smaller exact fragment cannot claim superiority over a larger, possibly changing body.
         let stableBaseline = quantizationLimited && bestRows.count >= otherRows.count
+        let frozenBodyBaseline = !insets.isEmpty && quantizationLimited && bestRows.count >= otherRows.count * 2 &&
+            validator.score(previous, current, shift: best).nearLossless
         let start = stableBaseline ? otherRows.lowerBound : max(bestRows.lowerBound, otherRows.lowerBound)
         let end = stableBaseline ? otherRows.upperBound : min(bestRows.upperBound, otherRows.upperBound)
         guard end - start >= 24 else { return false }
@@ -573,7 +672,9 @@ struct VisionOffsetEstimator: OffsetEstimating {
                 let left = leftRaw.bindMemory(to: UInt8.self), right = rightRaw.bindMemory(to: UInt8.self)
                 let offsets = [0, 4, current.bytesPerRow]
                 var wins = 0, losses = 0, bands = [Int](repeating: 0, count: 4)
+                var crossBands = [Int](repeating: 0, count: 6)
                 var firstWin = end, lastWin = start
+                var firstCross = current.width, lastCross = 0
                 for point in points where point.y >= start && point.y < end {
                     let q = point.y * current.bytesPerRow + point.x * 4
                     let p = q + best * current.bytesPerRow, a = q + alternative * current.bytesPerRow
@@ -591,11 +692,18 @@ struct VisionOffsetEstimator: OffsetEstimating {
                         wins += 1
                         firstWin = min(firstWin, point.y); lastWin = max(lastWin, point.y)
                         bands[min(3, (point.y - start) * 4 / (end - start))] += 1
+                        crossBands[min(5, point.x * 6 / current.width)] += 1
+                        firstCross = min(firstCross, point.x); lastCross = max(lastCross, point.x)
                     } else if otherError <= 12, bestError >= 48 { losses += 1 }
                 }
                 let requiredBands = end - start >= 144 ? 3 : 2
+                let distributedRows = bands.filter { $0 >= 4 }.count >= requiredBands &&
+                    lastWin - firstWin >= min(24, (end - start) / 3)
+                // Table column labels can occupy a narrow glyph strip but repeat independently across many rows.
+                let distributedColumns = frozenBodyBaseline && crossBands.filter { $0 >= 4 }.count >= 4 &&
+                    lastCross - firstCross >= current.width / 2
                 return wins >= 24 && wins >= max(1, losses) * 8 &&
-                    bands.filter { $0 >= 4 }.count >= requiredBands && lastWin - firstWin >= min(24, (end - start) / 3)
+                    (distributedRows || distributedColumns)
             }
         }
         guard !decisive, canRefine else { return decisive }
@@ -612,7 +720,12 @@ struct VisionOffsetEstimator: OffsetEstimating {
     /// This path requires a near-lossless winner across a separate uniform grid, never a short exact patch.
     private func rasterDistinguishes(_ previous: PixelImage, _ current: PixelImage, best: Int, alternative: Int,
                                     rows: Range<Int>) -> Bool {
-        let nx = min(128, current.width - 1), ny = min(128, rows.count)
+        let insets = previous.matchingInsets.merged(with: current.matchingInsets)
+        guard let bestRows = validator.contentRows(height: current.height, shift: best, insets: insets) else { return false }
+        let start = max(rows.lowerBound, bestRows.lowerBound), end = min(rows.upperBound, bestRows.upperBound)
+        // Unlike glyph baseline inference, raster comparisons must read real dependable pixels at both offsets.
+        guard end - start >= 24 else { return false }
+        let nx = min(128, current.width - 1), ny = min(128, end - start)
         guard nx >= 16, ny >= 24 else { return false }
         return previous.pixels.withUnsafeBytes { leftRaw in
             current.pixels.withUnsafeBytes { rightRaw in
@@ -621,7 +734,7 @@ struct VisionOffsetEstimator: OffsetEstimating {
                 var bestSquared = 0.0, otherSquared = 0.0
                 var rowBands = [Int](repeating: 0, count: 4), columnBands = [Int](repeating: 0, count: 3)
                 for iy in 0..<ny {
-                    let y = rows.lowerBound + iy * rows.count / ny
+                    let y = start + iy * (end - start) / ny
                     for ix in 0..<nx {
                         let x = ix * (current.width - 1) / nx
                         let q = y * current.bytesPerRow + x * 4
@@ -634,7 +747,7 @@ struct VisionOffsetEstimator: OffsetEstimating {
                             bestSquared += Double(b * b); otherSquared += Double(o * o)
                         }
                         count += 1
-                        if worst <= 1 { nearExact += 1 }
+                        if worst <= 2 { nearExact += 1 }
                         if bestError <= 3, otherError >= 12, otherError >= max(1, bestError) * 4 {
                             wins += 1
                             rowBands[min(3, iy * 4 / ny)] += 1
@@ -653,7 +766,8 @@ struct VisionOffsetEstimator: OffsetEstimating {
     /// Test alternative offsets on ink/edges, not mostly-white document margins.
     private func sampledError(_ previous: PixelImage, _ current: PixelImage, shift: Int,
                               points: [SamplePoint], cutoff: Double) -> (mean: Double, badFraction: Double, maximumError: Int) {
-        guard let rows = validator.contentRows(height: current.height, shift: shift) else { return (1, 1, 255) }
+        let insets = previous.matchingInsets.merged(with: current.matchingInsets)
+        guard let rows = validator.contentRows(height: current.height, shift: shift, insets: insets) else { return (1, 1, 255) }
         // Evidence must be relative to the shared body, not to samples outside this displacement's overlap.
         let sampleCount = points.reduce(0) { $0 + (rows.contains($1.y) ? 1 : 0) }
         guard sampleCount >= 24 else { return (1, 1, 255) }
@@ -693,24 +807,28 @@ struct OverlapValidator {
         let badFraction: Double
         let laneMeans: [Double]
         let textured: Bool
+        let nearLossless: Bool
         var isReliable: Bool {
             textured && mean <= 0.028 && badFraction <= 0.12 && laneMeans.allSatisfy { $0 <= 0.045 }
         }
-        static let invalid = Score(mean: 1, badFraction: 1, laneMeans: [1, 1, 1], textured: false)
+        static let invalid = Score(mean: 1, badFraction: 1, laneMeans: [1, 1, 1], textured: false, nearLossless: false)
     }
 
-    func contentRows(height: Int, shift: Int) -> Range<Int>? {
+    func contentRows(height: Int, shift: Int, insets: MatchingInsets = .none) -> Range<Int>? {
         guard shift > -height, shift < height else { return nil }
-        let margin = height / 6
-        let start = max(margin, margin - shift), end = min(height - margin, height - margin - shift)
-        guard end - start >= max(8, min(24, height / 16)) else { return nil }
+        let top = max(height / 6, insets.leading), bottom = height - max(height / 6, insets.trailing)
+        let start = max(top, top - shift), end = min(bottom, bottom - shift)
+        let minimum = max(max(8, min(24, height / 16)), insets.isEmpty ? 0 : (bottom - top) / 5)
+        // A frozen band must not turn a tiny repeated fragment into evidence for a large jump.
+        guard end - start >= minimum else { return nil }
         return start..<end
     }
 
     func score(_ previous: PixelImage, _ current: PixelImage, shift: Int,
                rows requestedRows: Range<Int>? = nil) -> Score {
         guard previous.width == current.width, previous.height == current.height,
-              current.width > 1, let content = contentRows(height: current.height, shift: shift) else { return .invalid }
+              current.width > 1, let content = contentRows(height: current.height, shift: shift,
+                  insets: previous.matchingInsets.merged(with: current.matchingInsets)) else { return .invalid }
         let rows = requestedRows ?? content
         guard !rows.isEmpty, rows.lowerBound >= content.lowerBound, rows.upperBound <= content.upperBound else {
             return .invalid
@@ -721,7 +839,7 @@ struct OverlapValidator {
                 let rowBytes = current.bytesPerRow
                 let patchOffsets = [0, 4, rowBytes]
                 var totals = [Double](repeating: 0, count: 3), counts = [Int](repeating: 0, count: 3)
-                var bad = 0, edges = 0, verticalEdges = 0, count = 0
+                var bad = 0, edges = 0, verticalEdges = 0, count = 0, nearExact = 0, squared = 0.0
                 let nx = min(128, current.width - 1), ny = min(96, rows.count)
                 for iy in 0..<ny {
                     let y = rows.lowerBound + iy * rows.count / ny
@@ -737,6 +855,7 @@ struct OverlapValidator {
                             for offset in patchOffsets {
                                 let delta = abs(Int(left[p + offset + c]) - Int(right[q + offset + c]))
                                 channelDifference = max(channelDifference, delta)
+                                squared += Double(delta * delta)
                             }
                             difference += channelDifference; worst = max(worst, channelDifference)
                             // Adjacent pairs can hide all edges from a regularly spaced sampling grid.
@@ -749,6 +868,7 @@ struct OverlapValidator {
                         totals[lane] += Double(difference) / 765
                         counts[lane] += 1; count += 1
                         if worst > 32 { bad += 1 }
+                        if worst <= 2 { nearExact += 1 }
                         if horizontal + vertical > 48 { edges += 1 }
                         if vertical > 24 { verticalEdges += 1 }
                     }
@@ -759,7 +879,8 @@ struct OverlapValidator {
                              laneMeans: laneMeans,
                              textured: (Double(edges) / Double(max(1, count)) >= 0.012 &&
                                 Double(verticalEdges) / Double(max(1, count)) >= 0.004) ||
-                                ImageTexture.hasMultiscaleSupport(current, rows: rows))
+                                ImageTexture.hasMultiscaleSupport(current, rows: rows),
+                             nearLossless: nearExact * 100 >= count * 99 && squared <= Double(count * 3 * patchOffsets.count))
             }
         }
     }

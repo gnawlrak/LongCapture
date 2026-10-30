@@ -28,6 +28,231 @@ private final class KnownFramePositionEstimator: OffsetEstimating {
 }
 
 final class StitchingTests: XCTestCase {
+    func testFrozenTableLeadingBandInBothAxesDirectionsAndAutomaticMode() throws {
+        for axis in [CaptureAxis.vertical, .horizontal] {
+            let canvas = TableTestCanvas(axis: axis), leading = axis == .vertical ? 180 : 280
+            for mode in [axis, .automatic] {
+                for sign in [1, -1] {
+                    let start = sign == 1 ? 500 : 3_500
+                    let sut = StitchingController(axis: mode)
+                    for offset in [0, 80, 160, 240, 400, 320, 480] {
+                        let update = sut.accept(try canvas.frame(at: start + sign * offset, leading: leading))
+                        XCTAssertNotEqual(update.action, .needsRecovery, update.message ?? "")
+                    }
+                    let result = try sut.finish()
+                    XCTAssertFalse(result.incomplete)
+                    XCTAssertEqual(result.document.axis, axis)
+                    try assertPixelsEqual(result.image, canvas.frame(at: sign == 1 ? start : start - 480,
+                        length: canvas.viewportLength + 480, leading: leading))
+                }
+            }
+        }
+    }
+
+    func testFrozenTableRecoveryRelocatesAndContinuesInBothAxes() throws {
+        for axis in [CaptureAxis.vertical, .horizontal] {
+            let canvas = TableTestCanvas(axis: axis), leading = axis == .vertical ? 180 : 280
+            for sign in [1, -1] {
+                let start = sign == 1 ? 500 : 3_500
+                let sut = StitchingController(axis: .automatic)
+                for offset in stride(from: 0, through: 1_280, by: 80) {
+                    let update = sut.accept(try canvas.frame(at: start + sign * offset, leading: leading))
+                    XCTAssertNotEqual(update.action, .needsRecovery, "\(axis) \(sign) offset \(offset): \(update.message ?? "")")
+                }
+                XCTAssertEqual(sut.accept(try canvas.frame(at: 6_000, leading: leading)).action, .needsRecovery)
+                let recovered = sut.accept(try canvas.frame(at: start + sign * 137, leading: leading))
+                XCTAssertEqual(recovered.progress, .recovered)
+                XCTAssertEqual(recovered.height, canvas.viewportLength + 1_280)
+                for offset in stride(from: 217, through: 1_497, by: 80) {
+                    XCTAssertNotEqual(sut.accept(try canvas.frame(at: start + sign * offset, leading: leading)).action,
+                                      .needsRecovery)
+                }
+                let result = try sut.finish()
+                XCTAssertFalse(result.incomplete)
+                try assertPixelsEqual(result.image, canvas.frame(at: sign == 1 ? start : start - 1_497,
+                    length: canvas.viewportLength + 1_497, leading: leading))
+            }
+        }
+    }
+
+    func testFrozenTableRetinaQuantizationDoesNotHideTheStationaryBand() throws {
+        for axis in [CaptureAxis.vertical, .horizontal] {
+            let canvas = TableTestCanvas(axis: axis), leading = axis == .vertical ? 180 : 280
+            for sign in [1, -1] {
+                let start = sign == 1 ? 500 : 3_500, sut = StitchingController(axis: .automatic)
+                var phase = 0
+                func frame(_ position: Int) throws -> CGImage {
+                    defer { phase += 1 }
+                    return try retinaRaster(canvas.frame(at: position, leading: leading), ditherPhase: phase)
+                }
+                for offset in [0, 80, 160, 240, 400, 320, 480] {
+                    let update = sut.accept(try frame(start + sign * offset))
+                    XCTAssertNotEqual(update.action, .needsRecovery, "\(axis) \(sign): \(update.message ?? "")")
+                }
+                XCTAssertEqual(sut.accept(try frame(6_000)).action, .needsRecovery)
+                XCTAssertEqual(sut.accept(try frame(start + sign * 137)).progress, .recovered)
+                for offset in stride(from: 217, through: 537, by: 80) {
+                    let update = sut.accept(try frame(start + sign * offset))
+                    XCTAssertNotEqual(update.action, .needsRecovery, "\(axis) \(sign): \(update.message ?? "")")
+                }
+                let result = try sut.finish(), actual = try PixelImage(result.image)
+                XCTAssertFalse(result.incomplete); XCTAssertEqual(result.document.axis, axis)
+                let expected = try PixelImage(retinaRaster(canvas.frame(at: sign == 1 ? start : start - 537,
+                    length: canvas.viewportLength + 537, leading: leading)))
+                XCTAssertEqual(actual.width, expected.width); XCTAssertEqual(actual.height, expected.height)
+                guard actual.pixels.count == expected.pixels.count else { continue }
+                let maximum = zip(actual.pixels, expected.pixels).reduce(0) { max($0, abs(Int($1.0) - Int($1.1))) }
+                XCTAssertLessThanOrEqual(maximum, 1)
+            }
+        }
+    }
+
+    func testFrozenTableBothEdgesSurviveContinuationWithoutRepeatingWithinPages() throws {
+        for axis in [CaptureAxis.vertical, .horizontal] {
+            let canvas = TableTestCanvas(axis: axis)
+            let leading = axis == .vertical ? 120 : 240, trailing = axis == .vertical ? 100 : 180
+            let width = axis == .vertical ? canvas.image.width : canvas.image.height
+            let limit = canvas.viewportLength + 240
+            for sign in [1, -1] {
+                let start = sign == 1 ? 500 : 3_500
+                let sut = StitchingController(limits: StitchLimits(maximumPixels: width * limit, maximumHeight: limit),
+                                              continuesAtLimit: true, axis: .automatic)
+                for offset in stride(from: 0, through: 480, by: 80) {
+                    let update = sut.accept(try canvas.frame(at: start + sign * offset, leading: leading, trailing: trailing))
+                    XCTAssertNotEqual(update.action, .needsRecovery, "\(axis) \(sign) offset \(offset): \(update.message ?? "")")
+                }
+                let result = try sut.finish()
+                XCTAssertFalse(result.incomplete)
+                XCTAssertEqual(result.document.pages.count, 2)
+                guard result.document.pages.count == 2 else { continue }
+                for (index, origin) in (sign == 1 ? [0, 240] : [-480, -240]).enumerated() {
+                    try assertPixelsEqual(result.document.pages[index].load(), canvas.frame(at: start + origin,
+                        length: limit, leading: leading, trailing: trailing))
+                }
+            }
+        }
+    }
+
+    func testFrozenTableHeaderCannotAuthorizePeriodicOrBlankBody() throws {
+        for axis in [CaptureAxis.vertical, .horizontal] {
+            let leading = axis == .vertical ? 180 : 280
+            let periodic = TableTestCanvas(axis: axis, repeating: true)
+            let repeated = StitchingController(axis: axis)
+            let first = try periodic.frame(at: 500, leading: leading)
+            _ = repeated.accept(first)
+            XCTAssertEqual(repeated.accept(try periodic.frame(at: 537, leading: leading)).action, .needsRecovery)
+            let incomplete = try repeated.finish()
+            XCTAssertTrue(incomplete.incomplete)
+            try assertPixelsEqual(incomplete.image, first)
+
+            let canvas = TableTestCanvas(axis: axis)
+            let sut = StitchingController(axis: axis)
+            let raw = try PixelImage(canvas.frame(at: 500, leading: leading))
+            let normalized = axis == .horizontal ? try raw.transposed() : raw
+            _ = sut.accept(try raw.cgImage())
+            var blank = Data(repeating: 255, count: normalized.pixels.count)
+            blank.replaceSubrange(0..<(leading * normalized.bytesPerRow),
+                                  with: normalized.pixels.prefix(leading * normalized.bytesPerRow))
+            let image = try PixelImage(TestCanvas.image(width: normalized.width, height: normalized.height, pixels: blank))
+            let changed = try (axis == .horizontal ? image.transposed() : image).cgImage()
+            XCTAssertEqual(sut.accept(changed).action, .needsRecovery)
+            XCTAssertTrue(try sut.finish().incomplete)
+        }
+    }
+
+    func testFrozenTableWrongInjectedShiftCannotBypassBodyAndSeamValidation() throws {
+        XCTAssertNil(OverlapValidator().contentRows(height: 800, shift: 336, insets: MatchingInsets(leading: 280)))
+        XCTAssertNotNil(OverlapValidator().contentRows(height: 800, shift: 80, insets: MatchingInsets(leading: 280)))
+        for axis in [CaptureAxis.vertical, .horizontal] {
+            let canvas = TableTestCanvas(axis: axis), leading = axis == .vertical ? 180 : 280
+            let sut = StitchingController(estimator: ScriptedEstimator([51]), axis: axis)
+            let first = try canvas.frame(at: 500, leading: leading)
+            _ = sut.accept(first)
+            XCTAssertEqual(sut.accept(try canvas.frame(at: 580, leading: leading)).action, .needsRecovery)
+            let result = try sut.finish()
+            XCTAssertTrue(result.incomplete)
+            try assertPixelsEqual(result.image, first)
+        }
+    }
+
+    func testOversizedFrozenBandsFailClosedRatherThanAuthorizeStaticHeader() throws {
+        for axis in [CaptureAxis.vertical, .horizontal] {
+            let canvas = TableTestCanvas(axis: axis), length = canvas.viewportLength
+            for (leading, trailing) in [(length * 3 / 5, 0), (length * 9 / 20, length * 9 / 20)] {
+                let first = try canvas.frame(at: 500, leading: leading, trailing: trailing)
+                let next = try canvas.frame(at: 517, leading: leading, trailing: trailing)
+                let a = try PixelImage(first), b = try PixelImage(next)
+                let old = axis == .horizontal ? try a.transposed() : a
+                let new = axis == .horizontal ? try b.transposed() : b
+                let insets = FrozenEdgeDetector.detect(previous: old, current: new)
+                XCTAssertNil(OverlapValidator().contentRows(height: length, shift: 0, insets: insets))
+                let sut = StitchingController(axis: axis)
+                _ = sut.accept(first)
+                XCTAssertEqual(sut.accept(next).action, .needsRecovery)
+                let result = try sut.finish()
+                XCTAssertTrue(result.incomplete)
+                try assertPixelsEqual(result.image, first)
+            }
+        }
+    }
+
+    func testFrozenTableOneLocalMarkerIsNotDistributedBodyEvidence() throws {
+        for axis in [CaptureAxis.vertical, .horizontal] {
+            let canvas = TableTestCanvas(axis: axis, repeating: true), leading = axis == .vertical ? 180 : 280
+            func frame(at position: Int) throws -> CGImage {
+                let source = try PixelImage(canvas.frame(at: position, leading: leading))
+                let body = axis == .horizontal ? try source.transposed() : source
+                var pixels = body.pixels
+                pixels.withUnsafeMutableBytes { raw in
+                    let bytes = raw.bindMemory(to: UInt8.self), top = 500 + leading + 64 - position
+                    for y in top..<(top + 20) {
+                        for x in (body.width / 2)..<(body.width / 2 + 20) {
+                            let p = (y * body.width + x) * 4
+                            for c in 0..<3 { bytes[p + c] = UInt8((x * 17 + (y - top) * 29 + c * 61) % 256) }
+                        }
+                    }
+                }
+                let marked = try PixelImage(TestCanvas.image(width: body.width, height: body.height, pixels: pixels))
+                return try (axis == .horizontal ? marked.transposed() : marked).cgImage()
+            }
+            let sut = StitchingController(axis: axis), first = try frame(at: 500)
+            _ = sut.accept(first)
+            XCTAssertEqual(sut.accept(try frame(at: 537)).action, .needsRecovery)
+            let result = try sut.finish()
+            XCTAssertTrue(result.incomplete)
+            try assertPixelsEqual(result.image, first)
+        }
+    }
+
+    func testFrozenTableScatteredBodyChangesCannotPreferAShortExactFragment() throws {
+        for axis in [CaptureAxis.vertical, .horizontal] {
+            let canvas = TableTestCanvas(axis: axis, repeating: true), leading = axis == .vertical ? 180 : 280
+            let first = try canvas.frame(at: 500, leading: leading)
+            let next = try PixelImage(canvas.frame(at: 537, leading: leading))
+            let body = axis == .horizontal ? try next.transposed() : next
+            var pixels = body.pixels
+            pixels.withUnsafeMutableBytes { raw in
+                let bytes = raw.bindMemory(to: UInt8.self)
+                for top in stride(from: leading + 18, to: body.height - body.height / 6 - 12, by: 58) {
+                    for y in top..<(top + 10) {
+                        for x in 20..<(body.width - 20) {
+                            let p = (y * body.width + x) * 4
+                            bytes[p] = 60; bytes[p + 1] = 150; bytes[p + 2] = 210
+                        }
+                    }
+                }
+            }
+            let changed = try PixelImage(TestCanvas.image(width: body.width, height: body.height, pixels: pixels))
+            let sut = StitchingController(axis: axis)
+            _ = sut.accept(first)
+            XCTAssertEqual(sut.accept(try (axis == .horizontal ? changed.transposed() : changed).cgImage()).action,
+                           .needsRecovery)
+            let result = try sut.finish()
+            XCTAssertTrue(result.incomplete)
+            try assertPixelsEqual(result.image, first)
+        }
+    }
+
     func testPictureHorizontalMatchingRelocationAndContinuedGrowth() throws {
         let canvas = PictureTestCanvas()
         for axis in [CaptureAxis.horizontal, .automatic] {
@@ -65,6 +290,39 @@ final class StitchingTests: XCTestCase {
         XCTAssertNil(estimator.estimate(previous: blank, current: blank).shift)
     }
 
+    func testRetinaPictureRecoveryWithIndependentDisplayQuantization() throws {
+        let canvas = PictureTestCanvas()
+        for sign in [1, -1] {
+            for noisy in [false, true] {
+                let start = sign == 1 ? 500 : 5_000, sut = StitchingController(axis: .automatic)
+                var phase = 0
+                func frame(_ position: Int) throws -> CGImage {
+                    defer { phase += 1 }
+                    return try retinaRaster(canvas.frame(at: position), ditherPhase: noisy ? phase : nil)
+                }
+                for offset in stride(from: 0, through: 1_200, by: 200) {
+                    let update = sut.accept(try frame(start + sign * offset))
+                    XCTAssertNotEqual(update.action, .needsRecovery, "\(sign) noisy \(noisy) \(offset): \(update.message ?? "")")
+                }
+                XCTAssertEqual(sut.accept(try frame(9_000)).action, .needsRecovery)
+                XCTAssertEqual(sut.accept(try frame(start + sign * 137)).progress, .recovered)
+                for offset in stride(from: 337, through: 1_537, by: 200) {
+                    let update = sut.accept(try frame(start + sign * offset))
+                    XCTAssertNotEqual(update.action, .needsRecovery, "\(sign) noisy \(noisy) \(offset): \(update.message ?? "")")
+                }
+                let result = try sut.finish()
+                XCTAssertFalse(result.incomplete)
+                XCTAssertEqual(result.document.axis, .horizontal)
+                let expected = try PixelImage(retinaRaster(canvas.frame(at: sign == 1 ? start : start - 1_537, width: 2_337)))
+                let actual = try PixelImage(result.image)
+                XCTAssertEqual(actual.width, expected.width); XCTAssertEqual(actual.height, expected.height)
+                guard actual.pixels.count == expected.pixels.count else { continue }
+                let maximum = zip(actual.pixels, expected.pixels).reduce(0) { max($0, abs(Int($1.0) - Int($1.1))) }
+                XCTAssertLessThanOrEqual(maximum, noisy ? 1 : 0, "Pixel order must survive without resampling or incorrect aliases")
+            }
+        }
+    }
+
     func testPictureRelocationRejectsChangedBodyAndAcceptsOneLevelRasterNoise() throws {
         let canvas = PictureTestCanvas()
         let sut = StitchingController(axis: .horizontal)
@@ -96,6 +354,33 @@ final class StitchingTests: XCTestCase {
         let result = try sut.finish()
         XCTAssertFalse(result.incomplete)
         try assertPixelsEqual(result.image, canvas.frame(at: 500, width: 3_200))
+    }
+
+    func testDisplayQuantizationCannotAuthorizePeriodicPicturesOrChangedBodies() throws {
+        let repeated = PictureTestCanvas(width: 2_400, period: 384)
+        let estimator = VisionOffsetEstimator()
+        let a = try PixelImage(retinaRaster(repeated.frame(at: 0), ditherPhase: 0)).transposed()
+        for position in [100, 200, 224, 240] {
+            let b = try PixelImage(retinaRaster(repeated.frame(at: position), ditherPhase: 1)).transposed()
+            XCTAssertNil(estimator.estimate(previous: a, current: b).shift,
+                         "Opposite periodic aliases must reject without sampling outside either viewport")
+        }
+        let canvas = PictureTestCanvas(), first = try retinaRaster(canvas.frame(at: 500))
+        let raw = try PixelImage(retinaRaster(canvas.frame(at: 700)))
+        var pixels = raw.pixels
+        pixels.withUnsafeMutableBytes { bytes in
+            let data = bytes.bindMemory(to: UInt8.self)
+            for p in stride(from: 0, to: data.count, by: 4) {
+                for c in 0..<3 { data[p + c] += 4 }
+            }
+        }
+        let sut = StitchingController(axis: .horizontal)
+        _ = sut.accept(first)
+        XCTAssertEqual(sut.accept(TestCanvas.image(width: raw.width, height: raw.height, pixels: pixels)).action,
+                       .needsRecovery)
+        let result = try sut.finish()
+        XCTAssertTrue(result.incomplete)
+        try assertPixelsEqual(result.image, first)
     }
 
     func testMultiscaleTextureCannotTurnALinearGradientIntoRegistrationEvidence() throws {

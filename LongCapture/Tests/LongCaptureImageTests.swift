@@ -161,6 +161,63 @@ struct HorizontalTextTestCanvas {
 
 enum ViewportOverlayEdge { case top, bottom }
 
+/// An upright spreadsheet whose frozen leading/trailing bands stay at viewport coordinates.
+struct TableTestCanvas {
+    let image: CGImage
+    let axis: CaptureAxis
+    var viewportLength: Int { axis == .horizontal ? 800 : 480 }
+
+    init(axis: CaptureAxis, repeating: Bool = false) {
+        self.axis = axis
+        let width = axis == .horizontal ? 8_000 : 480, height = axis == .horizontal ? 320 : 8_000
+        var pixels = Data(repeating: 255, count: width * height * 4)
+        pixels.withUnsafeMutableBytes { raw in
+            let context = CGContext(data: raw.baseAddress, width: width, height: height, bitsPerComponent: 8,
+                                    bytesPerRow: width * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue |
+                                        CGBitmapInfo.byteOrder32Big.rawValue)!
+            let font = CTFontCreateWithName("Menlo" as CFString, 11, nil)
+            for row in 0...(height / 36) {
+                for col in 0...(width / 128) {
+                    let rect = CGRect(x: col * 128, y: height - (row + 1) * 36, width: 128, height: 36)
+                    context.setFillColor(CGColor(gray: row % 2 == 0 ? 0.96 : 1, alpha: 1)); context.fill(rect)
+                    context.setStrokeColor(CGColor(gray: 0.72, alpha: 1)); context.setLineWidth(1); context.stroke(rect)
+                    let r = repeating ? 0 : row, c = repeating ? 0 : col
+                    let hash = UInt32(truncatingIfNeeded: r &* 668_265_263 &+ c &* 374_761_393)
+                    let text = String(format: "%03d:%02d %06X", r, c, hash & 0xFF_FFFF)
+                    let line = CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: [
+                        NSAttributedString.Key(kCTFontAttributeName as String): font,
+                        NSAttributedString.Key(kCTForegroundColorAttributeName as String): CGColor(gray: 0.08, alpha: 1)
+                    ]))
+                    context.textPosition = CGPoint(x: col * 128 + 5, y: height - row * 36 - 23)
+                    CTLineDraw(line, context)
+                }
+            }
+        }
+        image = TestCanvas.image(width: width, height: height, pixels: pixels)
+    }
+
+    func frame(at position: Int, length: Int? = nil, leading: Int, trailing: Int = 0) throws -> CGImage {
+        let length = length ?? viewportLength
+        func crop(_ origin: Int, _ length: Int) -> CGImage {
+            image.cropping(to: axis == .horizontal
+                ? CGRect(x: origin, y: 0, width: length, height: image.height)
+                : CGRect(x: 0, y: origin, width: image.width, height: length))!
+        }
+        let raw = try PixelImage(crop(position, length)), fixed = try PixelImage(crop(0, viewportLength))
+        let body = axis == .horizontal ? try raw.transposed() : raw
+        let frozen = axis == .horizontal ? try fixed.transposed() : fixed
+        var pixels = body.pixels
+        pixels.replaceSubrange(0..<(leading * body.bytesPerRow), with: frozen.pixels.prefix(leading * body.bytesPerRow))
+        if trailing > 0 {
+            pixels.replaceSubrange(((body.height - trailing) * body.bytesPerRow)..<pixels.count,
+                                   with: frozen.pixels.suffix(trailing * body.bytesPerRow))
+        }
+        let output = try PixelImage(TestCanvas.image(width: body.width, height: body.height, pixels: pixels))
+        return try (axis == .horizontal ? output.transposed() : output).cgImage()
+    }
+}
+
 /// Continuous, image-like colour fields: unlike glyphs/noise, adjacent offsets remain very similar.
 struct PictureTestCanvas {
     let image: CGImage
@@ -193,6 +250,29 @@ struct PictureTestCanvas {
     func frame(at x: Int, width: Int = 800) -> CGImage {
         image.cropping(to: CGRect(x: x, y: 0, width: width, height: image.height))!
     }
+}
+
+/// Independent nearest-neighbor Retina raster with optional sparse one-level display quantization.
+func retinaRaster(_ image: CGImage, ditherPhase: Int? = nil) throws -> CGImage {
+    let source = try PixelImage(image), width = source.width * 2, height = source.height * 2
+    var pixels = Data(count: width * height * 4)
+    source.pixels.withUnsafeBytes { input in
+        pixels.withUnsafeMutableBytes { output in
+            let a = input.bindMemory(to: UInt8.self), b = output.bindMemory(to: UInt8.self)
+            for y in 0..<height {
+                for x in 0..<width {
+                    let p = ((y / 2) * source.width + x / 2) * 4, q = (y * width + x) * 4
+                    for c in 0..<3 {
+                        let phase = ditherPhase.map { (x + y * 3 + c * 5 + $0) % 16 }
+                        let noise = phase.map { $0 < 2 ? 1 : $0 < 4 ? -1 : 0 } ?? 0
+                        b[q + c] = UInt8(clamping: Int(a[p + c]) + noise)
+                    }
+                    b[q + 3] = 255
+                }
+            }
+        }
+    }
+    return TestCanvas.image(width: width, height: height, pixels: pixels)
 }
 
 /// A viewport-fixed fade and jump button, not part of the scrolling document.

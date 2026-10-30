@@ -63,8 +63,9 @@ final class StitchingController {
         var candidates: [(axis: CaptureAxis, shift: Int)] = []
         var stationary = false
         for direction in [CaptureAxis.vertical, .horizontal] {
-            let old = direction == .horizontal ? try previous.transposed() : previous
-            let current = direction == .horizontal ? try frame.transposed() : frame
+            let oldFrame = direction == .horizontal ? try previous.transposed() : previous
+            let newFrame = direction == .horizontal ? try frame.transposed() : frame
+            let (old, current) = matchingFrames(previous: oldFrame, current: newFrame)
             guard let shift = estimator.estimate(previous: old, current: current).shift,
                   shift > -current.height, shift < current.height,
                   OverlapValidator().score(old, current, shift: shift).isReliable else { continue }
@@ -90,8 +91,9 @@ final class StitchingController {
 
     private func lockAutomatic(frame: PixelImage, axis selected: CaptureAxis, shift: Int) throws -> StitchUpdate {
         guard let previous = lastReliable else { throw StitchError.noContent }
-        let old = selected == .horizontal ? try previous.transposed() : previous
-        let current = selected == .horizontal ? try frame.transposed() : frame
+        let oldFrame = selected == .horizontal ? try previous.transposed() : previous
+        let newFrame = selected == .horizontal ? try frame.transposed() : frame
+        let (old, current) = matchingFrames(previous: oldFrame, current: newFrame)
         let initial = try StitchState(first: old, limits: limits)
         if !initial.atLimit {
             var probe = initial
@@ -133,28 +135,30 @@ final class StitchingController {
             clearRecovery()
             return update(.stayed, progress: wasRecovering ? .recovered : idleProgress)
         }
-        let estimate = knownEstimate ?? estimator.estimate(previous: previous, current: frame)
+        let pair = matchingFrames(previous: previous, current: frame)
+        let matchingFrame = pair.current
+        let estimate = knownEstimate ?? estimator.estimate(previous: pair.previous, current: matchingFrame)
         guard let shift = estimate.shift, shift > -frame.height, shift < frame.height else {
-            return recover(estimate.message ?? "重叠或纹理证据不足，请往回滚到参考画面，再减小滚动幅度。", frame: frame)
+            return recover(estimate.message ?? "重叠或纹理证据不足，请往回滚到参考画面，再减小滚动幅度。", frame: matchingFrame)
         }
-        guard OverlapValidator().score(previous, frame, shift: shift).isReliable else {
-            return recover("无法确认正文重叠，请往回滚到参考画面，再减小滚动幅度。", frame: frame)
+        guard OverlapValidator().score(pair.previous, matchingFrame, shift: shift).isReliable else {
+            return recover("无法确认正文重叠，请往回滚到参考画面，再减小滚动幅度。", frame: matchingFrame)
         }
         // Retain the integer anchor so subpixel motion can accumulate.
         if shift == 0 {
             clearRecovery()
             return update(.stayed, progress: wasRecovering ? .recovered : idleProgress)
         }
-        let action = state?.accept(frame, shift: shift) ?? .rejected
+        let action = state?.accept(matchingFrame, shift: shift) ?? .rejected
         if action == .needsRecovery || action == .rejected {
-            return recover("接缝未能通过校验，请往回滚到参考画面后继续。", frame: frame)
+            return recover("接缝未能通过校验，请往回滚到参考画面后继续。", frame: matchingFrame)
         }
         absolutePosition += shift
         clearRecovery()
         if action == .hitLimit, continuesAtLimit {
-            return try continuePage(with: frame)
+            return try continuePage(with: matchingFrame)
         }
-        lastReliable = state?.atLimit == true ? nil : frame
+        lastReliable = state?.atLimit == true ? nil : matchingFrame
         return update(action, message: action == .hitLimit ? "已达到图像上限，已保留确认部分。" : nil,
                       progress: wasRecovering ? .recovered : action == .stayed ? idleProgress : .growing)
     }
@@ -229,6 +233,12 @@ final class StitchingController {
     }
 
     private func clearRecovery() { recoveryMessage = nil; referenceImage = nil; recoveryIndex = nil }
+
+    private func matchingFrames(previous: PixelImage, current: PixelImage) -> (previous: PixelImage, current: PixelImage) {
+        let known = previous.matchingInsets.merged(with: current.matchingInsets)
+        let insets = known.isEmpty ? FrozenEdgeDetector.detect(previous: previous, current: current) : known
+        return (previous.withMatchingInsets(insets), current.withMatchingInsets(insets))
+    }
 
     private func outputImage(_ image: CGImage) throws -> CGImage {
         axis == .horizontal ? try PixelImage(image).transposed().cgImage() : image
