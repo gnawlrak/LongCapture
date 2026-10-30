@@ -1,8 +1,20 @@
 import CoreGraphics
+import CryptoKit
 import Foundation
 
 /// Owned exclusively by the session's serial processing queue.
 final class StitchingController {
+    private struct RejectedFrameFingerprint: Equatable {
+        let width: Int
+        let height: Int
+        let digest: SHA256.Digest
+
+        init(_ frame: PixelImage) {
+            width = frame.width; height = frame.height
+            digest = SHA256.hash(data: frame.pixels)
+        }
+    }
+
     private let estimator: any OffsetEstimating
     private let limits: StitchLimits
     private let continuesAtLimit: Bool
@@ -18,6 +30,7 @@ final class StitchingController {
     private var recoveryMessage: String?
     private var referenceImage: CGImage?
     private var recoveryIndex: RecoveryIndex?
+    private var rejectedFrame: RejectedFrameFingerprint?
     private var seedPosition = 0
     private var absolutePosition = 0
     private var carryoverRows = 0
@@ -41,10 +54,27 @@ final class StitchingController {
         if stopped || state?.atLimit == true { return update(.hitLimit, message: recoveryMessage ?? limitMessage) }
         do {
             let sourceFrame = try PixelImage(image)
-            if axis == .automatic { return try acceptAutomatic(sourceFrame) }
-            let frame = axis == .horizontal ? try sourceFrame.transposed() : sourceFrame
-            return try acceptFrame(frame)
-        } catch { return recover(error.localizedDescription) }
+            let fingerprint = rejectedFrame == nil ? nil : RejectedFrameFingerprint(sourceFrame)
+            // Unchanged rejected pixels cannot recover on their own. Hash the entire frame,
+            // not sampled pixels, and never use this shortcut to authorize a stitch.
+            if let rejectedFrame, fingerprint == rejectedFrame {
+                return update(.needsRecovery, message: recoveryMessage, progress: .recovering)
+            }
+            rejectedFrame = nil
+            let result: StitchUpdate
+            if axis == .automatic { result = try acceptAutomatic(sourceFrame) }
+            else {
+                let frame = axis == .horizontal ? try sourceFrame.transposed() : sourceFrame
+                result = try acceptFrame(frame)
+            }
+            if result.action == .needsRecovery {
+                rejectedFrame = fingerprint ?? RejectedFrameFingerprint(sourceFrame)
+            }
+            return result
+        } catch {
+            rejectedFrame = nil
+            return recover(error.localizedDescription)
+        }
     }
 
     private func acceptAutomatic(_ frame: PixelImage) throws -> StitchUpdate {
@@ -214,14 +244,14 @@ final class StitchingController {
         let reason = recoveryMessage ?? (state.atLimit ? "已达到图像上限，已保留确认部分。" : nil)
         let result = StitchedCapture(image: firstImage, incomplete: reason != nil, reason: reason, document: document)
         terminal = true
-        self.state = nil; lastReliable = nil; pendingAxisFrame = nil; recoveryIndex = nil; referenceImage = nil
+        self.state = nil; lastReliable = nil; pendingAxisFrame = nil; recoveryIndex = nil; referenceImage = nil; rejectedFrame = nil
         pages = []; archive = nil
         return result
     }
 
     func cancel() {
         cancelled = true; terminal = true
-        state = nil; lastReliable = nil; pendingAxisFrame = nil; recoveryMessage = nil; referenceImage = nil; recoveryIndex = nil
+        state = nil; lastReliable = nil; pendingAxisFrame = nil; recoveryMessage = nil; referenceImage = nil; recoveryIndex = nil; rejectedFrame = nil
         pages = []; archive?.cleanup(); archive = nil
     }
 
@@ -232,7 +262,7 @@ final class StitchingController {
         return .unchanged
     }
 
-    private func clearRecovery() { recoveryMessage = nil; referenceImage = nil; recoveryIndex = nil }
+    private func clearRecovery() { recoveryMessage = nil; referenceImage = nil; recoveryIndex = nil; rejectedFrame = nil }
 
     private func matchingFrames(previous: PixelImage, current: PixelImage) -> (previous: PixelImage, current: PixelImage) {
         let known = previous.matchingInsets.merged(with: current.matchingInsets)

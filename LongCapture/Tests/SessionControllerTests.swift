@@ -81,6 +81,44 @@ private final class FrameRecorder: @unchecked Sendable {
 
 @MainActor
 final class SessionCoordinatorTests: XCTestCase {
+    func testIdleSelectionCompletionAndCancellationDoNotKeepSourceRunning() async throws {
+        var sourceCreations = 0
+        let source = FakeFrameSource()
+        let completed = expectation(description: "result after source stops")
+        let session = SessionCoordinator(sourceFactory: { _, onFrame, _ in
+            sourceCreations += 1
+            source.onFrame = onFrame
+            return source
+        }, onResult: { _ in
+            XCTAssertTrue(source.stopped)
+            completed.fulfill()
+        }, onError: { XCTFail($0.localizedDescription) })
+        XCTAssertEqual(sourceCreations, 0)
+        session.prepareForSelection()
+        XCTAssertEqual(sourceCreations, 0, "Selection must not start a screen stream")
+        await session.cancel()
+        XCTAssertEqual(sourceCreations, 0)
+        session.prepareForSelection()
+        await session.beginCapture(geometry: try geometry())
+        XCTAssertEqual(sourceCreations, 1)
+        XCTAssertEqual(source.startCount, 1)
+        source.onFrame?(FramePipelineTests.image())
+        await session.complete()
+        await fulfillment(of: [completed], timeout: 3)
+        XCTAssertEqual(source.stopCount, 1)
+        source.onFrame?(FramePipelineTests.image())
+        session.resolveResult()
+        XCTAssertEqual(session.state, .idle)
+        XCTAssertEqual(sourceCreations, 1, "Resolving a result must not restart sampling")
+        session.prepareForSelection()
+        await session.beginCapture(geometry: try geometry())
+        XCTAssertEqual(source.startCount, 2)
+        await session.cancel()
+        XCTAssertEqual(source.stopCount, 2)
+        source.onFrame?(FramePipelineTests.image())
+        XCTAssertEqual(session.state, .idle)
+    }
+
     func testFrozenHorizontalTableKeepsHeaderOnceAndDrainsTail() async throws {
         let canvas = TableTestCanvas(axis: .horizontal)
         let source = FakeFrameSource()
@@ -288,8 +326,10 @@ private final class FakeFrameSource: CaptureFrameSource {
     var onFrame: ((CGImage) -> Void)?
     var onError: ((Error) -> Void)?
     var stopped = false
-    func start() async throws {}
-    func stop() async { stopped = true }
+    var startCount = 0
+    var stopCount = 0
+    func start() async throws { startCount += 1; stopped = false }
+    func stop() async { stopCount += 1; stopped = true }
 }
 
 private final class SuspendedFrameSource: CaptureFrameSource {

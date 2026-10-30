@@ -27,7 +27,96 @@ private final class KnownFramePositionEstimator: OffsetEstimating {
     }
 }
 
+private final class CountingEstimator: OffsetEstimating {
+    private let estimateFrame: (PixelImage, PixelImage) -> MoveEstimate
+    private(set) var count = 0
+
+    init(_ estimate: @escaping (PixelImage, PixelImage) -> MoveEstimate = { _, _ in MoveEstimate(shift: nil) }) {
+        estimateFrame = estimate
+    }
+
+    func estimate(previous: PixelImage, current: PixelImage) -> MoveEstimate {
+        count += 1
+        return estimateFrame(previous, current)
+    }
+}
+
 final class StitchingTests: XCTestCase {
+    func testUnchangedRejectedFramesDoNotRepeatMatchingAndAnyPixelChangeRetries() throws {
+        let canvas = TestCanvas(width: 96, height: 1_000)
+        for axis in [CaptureAxis.automatic, .vertical, .horizontal] {
+            let estimator = CountingEstimator()
+            let sut = StitchingController(estimator: estimator, axis: axis)
+            func oriented(_ frame: CGImage) throws -> CGImage {
+                axis == .horizontal ? try PixelImage(frame).transposed().cgImage() : frame
+            }
+            _ = sut.accept(try oriented(canvas.frame(at: 0, height: 160)))
+            let unknown = try PixelImage(oriented(canvas.frame(at: 600, height: 160)))
+            let first = sut.accept(try unknown.cgImage())
+            XCTAssertEqual(first.action, .needsRecovery)
+            let attempts = estimator.count, retained = sut.retainedPixelBytes
+            for _ in 0..<15 {
+                let repeated = sut.accept(try unknown.cgImage())
+                XCTAssertEqual(repeated.action, .needsRecovery)
+                XCTAssertEqual(repeated.message, first.message)
+                XCTAssertEqual(repeated.height, first.height)
+                XCTAssertEqual(repeated.progress, .recovering)
+            }
+            XCTAssertEqual(estimator.count, attempts, "Identical rejected pixels provide no new evidence")
+            XCTAssertEqual(sut.retainedPixelBytes, retained, "Do not retain another full viewport")
+            var changed = unknown.pixels
+            changed[changed.count - 4] ^= 1
+            let update = sut.accept(TestCanvas.image(width: unknown.width, height: unknown.height, pixels: changed))
+            XCTAssertEqual(update.action, .needsRecovery)
+            XCTAssertGreaterThan(estimator.count, attempts, "Even a one-channel change must retry, not be sampled away")
+            let resized = sut.accept(TestCanvas.image(width: unknown.height, height: unknown.width, pixels: changed))
+            XCTAssertTrue(resized.message?.contains("尺寸") == true, "Identical bytes with a different shape are not the same frame")
+            sut.cancel()
+            XCTAssertEqual(sut.retainedPixelBytes, 0)
+        }
+    }
+
+    func testRejectedFrameCacheResetsWhenReturningToReliableAnchor() throws {
+        let canvas = TestCanvas(width: 96, height: 1_000)
+        let estimator = CountingEstimator()
+        let sut = StitchingController(estimator: estimator)
+        let first = canvas.frame(at: 0, height: 160), unknown = canvas.frame(at: 600, height: 160)
+        _ = sut.accept(first)
+        XCTAssertEqual(sut.accept(unknown).action, .needsRecovery)
+        XCTAssertEqual(estimator.count, 1)
+        XCTAssertEqual(sut.accept(first).progress, .recovered)
+        XCTAssertEqual(sut.accept(unknown).action, .needsRecovery)
+        XCTAssertEqual(estimator.count, 2, "Do not reuse failure from a previous recovery episode")
+        let result = try sut.finish()
+        XCTAssertTrue(result.incomplete)
+        try assertPixelsEqual(result.image, first)
+        XCTAssertEqual(sut.retainedPixelBytes, 0)
+    }
+
+    func testRealVisionUnchangedRecoveryFramesResumeAndPreserveOutputInBothAxes() throws {
+        let canvas = TestCanvas(width: 128, height: 1_200)
+        for axis in [CaptureAxis.vertical, .horizontal] {
+            let estimator = CountingEstimator { VisionOffsetEstimator().estimate(previous: $0, current: $1) }
+            let sut = StitchingController(estimator: estimator, axis: .automatic)
+            func frame(_ y: Int, height: Int = 160) throws -> CGImage {
+                let image = canvas.frame(at: y, height: height)
+                return axis == .horizontal ? try PixelImage(image).transposed().cgImage() : image
+            }
+            for y in [0, 40, 80] { XCTAssertNotEqual(sut.accept(try frame(y)).action, .needsRecovery) }
+            XCTAssertEqual(sut.accept(try frame(800)).action, .needsRecovery)
+            let attempts = estimator.count
+            for _ in 0..<15 { XCTAssertEqual(sut.accept(try frame(800)).action, .needsRecovery) }
+            XCTAssertEqual(estimator.count, attempts)
+            XCTAssertEqual(sut.accept(try frame(20)).progress, .recovered)
+            for y in [60, 100, 120] { XCTAssertNotEqual(sut.accept(try frame(y)).action, .needsRecovery) }
+            let result = try sut.finish()
+            XCTAssertFalse(result.incomplete)
+            XCTAssertEqual(result.document.axis, axis)
+            try assertPixelsEqual(result.image, frame(0, height: 280))
+            XCTAssertEqual(sut.retainedPixelBytes, 0)
+        }
+    }
+
     func testSparseLandmarksPreservePixelsAndRecoverFromConfirmedHistoryInBothAxes() throws {
         let canvas = SparseLandmarkTestCanvas()
         for axis in [CaptureAxis.vertical, .horizontal] {
