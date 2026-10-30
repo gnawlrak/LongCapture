@@ -28,6 +28,115 @@ private final class KnownFramePositionEstimator: OffsetEstimating {
 }
 
 final class StitchingTests: XCTestCase {
+    func testParallaxGalleryKeepsRigidArtAndWholeCaptionsInBothDirectionsAndAxes() throws {
+        let canvas = ParallaxGalleryTestCanvas()
+        for axis in [CaptureAxis.horizontal, .vertical] {
+            for sign in [1, -1] {
+                let start = sign == 1 ? 0 : 3_280, end = start + sign * 1_640
+                let sut = StitchingController(axis: .automatic)
+                for offset in stride(from: 0, through: 1_640, by: 40) {
+                    let frame = try canvas.frame(at: start + sign * offset)
+                    let input = axis == .horizontal ? frame : try PixelImage(frame).transposed().cgImage()
+                    let update = sut.accept(input)
+                    XCTAssertNotEqual(update.action, .needsRecovery, "\(axis) \(sign) \(offset): \(update.message ?? "")")
+                }
+                let result = try sut.finish()
+                XCTAssertFalse(result.incomplete)
+                XCTAssertEqual(result.document.axis, axis)
+                let pixels = try axis == .horizontal ? PixelImage(result.image) : PixelImage(result.image).transposed()
+                let origin = min(start, end), length = canvas.viewportWidth + abs(end - start)
+                XCTAssertEqual(pixels.width, length)
+                guard pixels.width == length else { continue }
+                let expected = try PixelImage(canvas.image.cropping(to:
+                    CGRect(x: origin, y: 0, width: length, height: canvas.height))!)
+                for y in 0..<canvas.height where !canvas.captionRows.contains(y) {
+                    let row = (y * length * 4)..<((y + 1) * length * 4)
+                    XCTAssertEqual(pixels.pixels.subdata(in: row), expected.pixels.subdata(in: row))
+                }
+                // Every fully visible inner card must retain exactly one uncut 240px caption.
+                let y = canvas.captionRows.lowerBound + 4
+                for card in (origin / 820 + 1)..<((origin + length) / 820) {
+                    let indices = (0..<length).filter { x in
+                        let p = (y * length + x) * 4
+                        return pixels.pixels[p] == UInt8(50 + card * 11) && pixels.pixels[p + 2] == 52
+                    }
+                    XCTAssertEqual(indices.count, 240, "Caption \(card) must not be cut, lost or duplicated")
+                    if let first = indices.first, let last = indices.last {
+                        XCTAssertEqual(last - first, 239)
+                        guard last - first == 239 else { continue }
+                        for row in canvas.captionRows {
+                            let expected = Data((0..<240).flatMap { column -> [UInt8] in
+                                let label = UInt32(column) &* 374_761_393
+                                return [UInt8(50 + card * 11), UInt8(truncatingIfNeeded: (label ^ (label >> 13)) >> 8),
+                                        UInt8(40 + (row - canvas.captionRows.lowerBound) * 3), 255]
+                            })
+                            let begin = (row * length + first) * 4
+                            XCTAssertEqual(pixels.pixels.subdata(in: begin..<(begin + 240 * 4)), expected)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    func testLocalizedMotionCannotAuthorizePeriodicContentOrMissingOverlap() throws {
+        let canvas = ParallaxGalleryTestCanvas()
+        let first = try PixelImage(canvas.frame(at: 0)).transposed()
+        let distant = try PixelImage(canvas.frame(at: 4_920)).transposed()
+        XCTAssertNil(VisionOffsetEstimator().estimate(previous: first, current: distant).shift)
+        let repeated = TestCanvas(width: 240, height: 2_400, repeatedPeriod: 24)
+        var changed = try PixelImage(repeated.frame(at: 637, height: 800)).pixels
+        changed.withUnsafeMutableBytes { raw in
+            let bytes = raw.bindMemory(to: UInt8.self)
+            for y in 0..<800 {
+                for x in 90..<138 {
+                    let p = (y * 240 + x) * 4
+                    bytes[p] = 255; bytes[p + 1] = 255; bytes[p + 2] = 255
+                }
+            }
+        }
+        XCTAssertNil(VisionOffsetEstimator().estimate(previous: try PixelImage(repeated.frame(at: 600, height: 800)),
+            current: try PixelImage(TestCanvas.image(width: 240, height: 800, pixels: changed))).shift)
+    }
+
+    func testParallaxMotionStillRequiresARealSeamAndCanRecoverWithoutLosingArt() throws {
+        let canvas = ParallaxGalleryTestCanvas(), sut = StitchingController(axis: .automatic)
+        for offset in stride(from: 0, through: 1_280, by: 40) {
+            XCTAssertNotEqual(sut.accept(try canvas.frame(at: offset)).action, .needsRecovery)
+        }
+        let paused = sut.accept(try canvas.frame(at: 4_920))
+        XCTAssertEqual(paused.action, .needsRecovery)
+        XCTAssertEqual(paused.height, 2_080)
+        XCTAssertEqual(sut.accept(try canvas.frame(at: 1_280)).progress, .recovered)
+        for offset in stride(from: 1_320, through: 1_640, by: 40) {
+            XCTAssertNotEqual(sut.accept(try canvas.frame(at: offset)).action, .needsRecovery)
+        }
+        XCTAssertFalse(try sut.finish().incomplete)
+
+        // Independently moving narrow art that crosses every possible seam may help registration,
+        // but cannot be sliced into the result merely because the remaining background is stable.
+        let rigid = TestCanvas(width: 240, height: 2_000)
+        func crossingFrame(at position: Int, phase: Int) throws -> PixelImage {
+            var pixels = try PixelImage(rigid.frame(at: position, height: 800)).pixels
+            pixels.withUnsafeMutableBytes { raw in
+                let bytes = raw.bindMemory(to: UInt8.self)
+                for y in 0..<800 {
+                    for x in 90..<138 {
+                        let p = (y * 240 + x) * 4
+                        bytes[p] = UInt8(phase); bytes[p + 1] = UInt8(phase); bytes[p + 2] = UInt8(phase)
+                    }
+                }
+            }
+            return try PixelImage(TestCanvas.image(width: 240, height: 800, pixels: pixels))
+        }
+        let old = try crossingFrame(at: 0, phase: 30), new = try crossingFrame(at: 40, phase: 210)
+        XCTAssertEqual(VisionOffsetEstimator().estimate(previous: old, current: new).shift, 40)
+        var state = try StitchState(first: old, limits: .default)
+        XCTAssertEqual(state.accept(new, shift: 40), .needsRecovery)
+        XCTAssertEqual(state.position, 0)
+        try assertPixelsEqual(state.render(), old.cgImage())
+    }
+
     func testFrozenTableLeadingBandInBothAxesDirectionsAndAutomaticMode() throws {
         for axis in [CaptureAxis.vertical, .horizontal] {
             let canvas = TableTestCanvas(axis: axis), leading = axis == .vertical ? 180 : 280

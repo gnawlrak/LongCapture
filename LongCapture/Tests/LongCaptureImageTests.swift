@@ -159,6 +159,62 @@ struct HorizontalTextTestCanvas {
     }
 }
 
+/// Independent card art plus a caption that slides faster than the card, as on a parallax gallery.
+struct ParallaxGalleryTestCanvas {
+    let width = 6_400
+    let height = 240
+    let viewportWidth = 800
+    let captionRows = 90..<138
+    let image: CGImage
+
+    init() {
+        var data = Data(repeating: 255, count: 6_400 * 240 * 4)
+        data.withUnsafeMutableBytes { raw in
+            let bytes = raw.bindMemory(to: UInt8.self)
+            for y in 0..<240 {
+                for x in 0..<6_400 {
+                    let card = x / 820, local = x % 820, p = (y * 6_400 + x) * 4
+                    if local >= 800 {
+                        bytes[p] = 30; bytes[p + 1] = 30; bytes[p + 2] = 30
+                    } else if local < 380, y > 28, y < 212 {
+                        for c in 0..<3 {
+                            let wave = sin(Double(local + card * 131) / Double(19 + c * 7)) *
+                                cos(Double(y + card * 17) / Double(23 + c * 5))
+                            bytes[p + c] = UInt8(110 + wave * 70 + Double(card * 3))
+                        }
+                    }
+                }
+            }
+        }
+        image = TestCanvas.image(width: 6_400, height: 240, pixels: data)
+    }
+
+    func frame(at position: Int, captions: Bool = true) throws -> CGImage {
+        let base = image.cropping(to: CGRect(x: position, y: 0, width: viewportWidth, height: height))!
+        guard captions else { return base }
+        var pixels = try PixelImage(base).pixels
+        pixels.withUnsafeMutableBytes { raw in
+            let bytes = raw.bindMemory(to: UInt8.self)
+            for card in 0..<8 {
+                let captionX = card * 820 + 470 - position - (position - card * 820) / 8
+                for y in captionRows {
+                    for column in 0..<240 {
+                        let x = captionX + column
+                        guard x >= 0, x < viewportWidth else { continue }
+                        let p = (y * viewportWidth + x) * 4
+                        // An opaque, individually numbered caption makes split/duplicated pieces detectable.
+                        bytes[p] = UInt8(50 + card * 11)
+                        let label = UInt32(column) &* 374_761_393
+                        bytes[p + 1] = UInt8(truncatingIfNeeded: (label ^ (label >> 13)) >> 8)
+                        bytes[p + 2] = UInt8(40 + (y - captionRows.lowerBound) * 3)
+                    }
+                }
+            }
+        }
+        return TestCanvas.image(width: viewportWidth, height: height, pixels: pixels)
+    }
+}
+
 enum ViewportOverlayEdge { case top, bottom }
 
 /// An upright spreadsheet whose frozen leading/trailing bands stay at viewport coordinates.
