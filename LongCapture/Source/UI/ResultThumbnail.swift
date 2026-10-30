@@ -42,6 +42,11 @@ final class ResultThumbnail {
         let card = ThumbnailCard(frame: NSRect(origin: .zero, size: size), image: image,
                                  warning: warning, pageCount: pageCount, onClick: { [weak self] in self?.openPreview() },
                                  onHover: { [weak self] hovered in self?.lifecycle.setHovered(hovered) })
+        card.onInteraction = { [weak self] active in
+            guard let self else { return }
+            if !active { self.lifecycle.setHovered(self.window?.frame.contains(NSEvent.mouseLocation) == true) }
+            self.lifecycle.setInteracting(active)
+        }
         statusLabel = card.statusLabel
         panel.contentView = card
         window = panel
@@ -89,17 +94,16 @@ final class ResultThumbnail {
 }
 
 @MainActor
-private final class ThumbnailCard: NSView {
-    let statusLabel = NSTextField(labelWithString: "5 秒后自动保存 · 点击预览")
-    private let onClick: () -> Void
+private final class ThumbnailCard: ResultDragSourceView {
+    let statusLabel = NSTextField(labelWithString: "5 秒后保存 · 点击预览 / 拖出")
     private let onHover: (Bool) -> Void
     private var tracking: NSTrackingArea?
 
     init(frame: NSRect, image: NSImage, warning: String?, pageCount: Int,
          onClick: @escaping () -> Void, onHover: @escaping (Bool) -> Void) {
-        self.onClick = onClick
         self.onHover = onHover
-        super.init(frame: frame)
+        super.init(frame: frame, image: image)
+        self.onClick = onClick
         let glass = NativeGlassView(cornerRadius: 24, legacyMaterial: .popover)
         glass.frame = bounds
         glass.autoresizingMask = [.width, .height]
@@ -107,13 +111,14 @@ private final class ThumbnailCard: NSView {
         let content = glass.contentView
         setAccessibilityElement(true)
         setAccessibilityRole(.button)
-        setAccessibilityLabel("已完成 \(pageCount) 张长截图，点击打开预览；不操作将自动保存全部")
+        setAccessibilityLabel("已完成 \(pageCount) 张长截图，点击打开预览，可拖出当前图片；不操作将自动保存全部")
+        toolTip = "点击预览，或拖出此图的 PNG 副本；多张截图请在预览中切换后逐张拖出"
 
         let preview = ThumbnailImageView(image: image)
         preview.translatesAutoresizingMaskIntoConstraints = false
         content.addSubview(preview)
         let title = NSTextField(labelWithString: pageCount > 1 ? "已完成 \(pageCount) 张长截图" : "长截图已完成")
-        if pageCount > 1 { statusLabel.stringValue = "5 秒后保存全部 · 点击逐张预览" }
+        if pageCount > 1 { statusLabel.stringValue = "5 秒后保存全部 · 可拖出首张" }
         title.font = .systemFont(ofSize: 13, weight: .semibold)
         statusLabel.font = .systemFont(ofSize: 12)
         statusLabel.textColor = .secondaryLabelColor
@@ -158,7 +163,6 @@ private final class ThumbnailCard: NSView {
 
     override func mouseEntered(with event: NSEvent) { onHover(true) }
     override func mouseExited(with event: NSEvent) { onHover(false) }
-    override func mouseDown(with event: NSEvent) { onClick() }
     override func hitTest(_ point: NSPoint) -> NSView? { super.hitTest(point) == nil ? nil : self }
     override func accessibilityPerformPress() -> Bool { onClick(); return true }
 }

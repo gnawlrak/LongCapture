@@ -5,6 +5,117 @@ import XCTest
 
 final class GlassInterfaceTests: XCTestCase {
     @MainActor
+    func testShareUsesCurrentPageAndBlocksStaleTransferDuringPageLoading() async throws {
+        _ = NSApplication.shared
+        let first = sampleImage()
+        let second = NSImage(size: NSSize(width: 37, height: 83), flipped: false) { rect in
+            NSColor.systemOrange.setFill(); rect.fill(); return true
+        }
+        let firstPixels = try XCTUnwrap(first.cgImage(forProposedRect: nil, context: nil, hints: nil))
+        let secondPixels = try XCTUnwrap(second.cgImage(forProposedRect: nil, context: nil, hints: nil))
+        var shared: [NSImage] = []
+        var loading: CheckedContinuation<NSImage, Error>?
+        let clipboard = NSPasteboard.general.changeCount
+        let controller = PreviewWindowController(image: first,
+            onSave: { XCTFail("Sharing must not resolve the original"); return URL(fileURLWithPath: "/tmp/unused") },
+            onDiscard: { XCTFail("Sharing must not discard the original"); return false }, onChooseDirectory: {},
+            pageCount: 2, loadPage: { _ in try await withCheckedThrowingContinuation { loading = $0 } },
+            onShare: { image, _ in shared.append(image) })
+        defer { controller.closeAfterResolution() }
+        let root = try XCTUnwrap(controller.window?.contentView)
+        let share = try XCTUnwrap(button("分享", in: root))
+        share.performClick(nil)
+        XCTAssertEqual(shared.first?.size, NSSize(width: firstPixels.width, height: firstPixels.height))
+        let pages = try XCTUnwrap(descendants(in: root).compactMap { $0 as? NSPopUpButton }.first {
+            $0.itemTitles.contains("第 2 / 2 张")
+        })
+        pages.selectItem(at: 1)
+        NSApp.sendAction(try XCTUnwrap(pages.action), to: pages.target, from: pages)
+        for _ in 0..<20 where loading == nil { await Task.yield() }
+        XCTAssertNotNil(loading)
+        XCTAssertFalse(share.isEnabled)
+        let document = try XCTUnwrap(descendants(in: root).compactMap { $0 as? ResultDragSourceView }.first)
+        XCTAssertFalse(document.canDrag())
+        NSApp.sendAction(try XCTUnwrap(share.action), to: share.target, from: share)
+        XCTAssertEqual(shared.count, 1)
+        loading?.resume(returning: second)
+        for _ in 0..<100 where !share.isEnabled { await Task.yield() }
+        XCTAssertTrue(share.isEnabled)
+        share.performClick(nil)
+        XCTAssertEqual(shared.count, 2)
+        XCTAssertEqual(shared.last?.size, NSSize(width: secondPixels.width, height: secondPixels.height))
+        let sharedPixels = try XCTUnwrap(shared.last?.cgImage(forProposedRect: nil, context: nil, hints: nil))
+        try assertPixelsEqual(sharedPixels, secondPixels)
+        XCTAssertEqual(NSPasteboard.general.changeCount, clipboard)
+    }
+
+    @MainActor
+    func testNativeDragThresholdCancellationAndInteractionOwnership() throws {
+        _ = NSApplication.shared
+        let view = TestResultDragSource(frame: CGRect(x: 0, y: 0, width: 200, height: 200), image: sampleImage())
+        var interactions: [Bool] = [], clicks = 0
+        view.onInteraction = { interactions.append($0) }
+        view.onClick = { clicks += 1 }
+        func event(_ type: NSEvent.EventType, x: CGFloat) throws -> NSEvent {
+            try XCTUnwrap(NSEvent.mouseEvent(with: type, location: CGPoint(x: x, y: 40), modifierFlags: [],
+                timestamp: 0, windowNumber: 0, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+        }
+        view.mouseDown(with: try event(.leftMouseDown, x: 40))
+        view.mouseDragged(with: try event(.leftMouseDragged, x: 43))
+        XCTAssertEqual(view.started, 0)
+        view.mouseDragged(with: try event(.leftMouseDragged, x: 48))
+        view.mouseDragged(with: try event(.leftMouseDragged, x: 70))
+        XCTAssertEqual(view.started, 1)
+        view.mouseUp(with: try event(.leftMouseUp, x: 70))
+        XCTAssertEqual(clicks, 0)
+        XCTAssertTrue(view.isDraggingImage)
+        XCTAssertTrue(ResultDragSourceView.hasActiveDrag)
+        view.endImageDrag()
+        XCTAssertEqual(interactions, [true, false])
+        XCTAssertFalse(view.isDraggingImage)
+        XCTAssertFalse(ResultDragSourceView.hasActiveDrag)
+        view.canDrag = { false }
+        view.mouseDown(with: try event(.leftMouseDown, x: 40))
+        view.mouseDragged(with: try event(.leftMouseDragged, x: 70))
+        XCTAssertEqual(view.started, 1)
+        XCTAssertEqual(interactions, [true, false])
+    }
+
+    @MainActor
+    func testPreviewIncludesSharingWithoutReplacingExistingActions() throws {
+        _ = NSApplication.shared
+        let controller = PreviewWindowController(image: sampleImage(),
+            onSave: { XCTFail("Sharing must not automatically save or close"); return URL(fileURLWithPath: "/tmp/unused.png") },
+            onDiscard: { XCTFail("Sharing must not discard"); return false }, onChooseDirectory: {})
+        defer { controller.closeAfterResolution() }
+        let root = try XCTUnwrap(controller.window?.contentView)
+        for title in ["分享", "复制", "保存 PNG", "完成", "丢弃"] {
+            XCTAssertNotNil(button(title, in: root), title)
+        }
+    }
+
+    @MainActor
+    func testThumbnailClickWaitsForMouseUpSoItCanBecomeADrag() throws {
+        _ = NSApplication.shared
+        let existing = Set(NSApp.windows.map(ObjectIdentifier.init))
+        var opened = 0
+        let thumbnail = ResultThumbnail(image: sampleImage(), screenFrame: NSScreen.main!.frame,
+            onOpen: { opened += 1 }, onAutoSave: { XCTFail("An active interaction must not auto-save") })
+        defer { thumbnail.finish() }
+        thumbnail.show()
+        let panel = try XCTUnwrap(NSApp.windows.first { !existing.contains(ObjectIdentifier($0)) })
+        let root = try XCTUnwrap(panel.contentView)
+        func event(_ type: NSEvent.EventType) throws -> NSEvent {
+            try XCTUnwrap(NSEvent.mouseEvent(with: type, location: CGPoint(x: 80, y: 80), modifierFlags: [],
+                timestamp: 0, windowNumber: panel.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+        }
+        root.mouseDown(with: try event(.leftMouseDown))
+        XCTAssertEqual(opened, 0)
+        root.mouseUp(with: try event(.leftMouseUp))
+        XCTAssertEqual(opened, 1)
+    }
+
+    @MainActor
     func testLegacyMaterialAndReducedTransparencyKeepTheSameControls() throws {
         _ = NSApplication.shared
         var reduced = false
@@ -166,10 +277,10 @@ final class GlassInterfaceTests: XCTestCase {
         let scroll = try XCTUnwrap(descendants(in: root).compactMap { $0 as? NSScrollView }.first)
         let document = try XCTUnwrap(scroll.documentView)
         XCTAssertTrue(glassViews(in: document).isEmpty, "Glass belongs to controls, never screenshot pixels")
-        for title in ["复制", "保存位置…", "丢弃", "保存 PNG", "完成"] {
+        for title in ["复制", "分享", "保存位置…", "丢弃", "保存 PNG", "完成"] {
             XCTAssertNotNil(button(title, in: root), "Missing result action: \(title)")
         }
-        for title in ["复制", "保存位置…", "丢弃", "保存 PNG"] {
+        for title in ["复制", "分享", "保存位置…", "丢弃", "保存 PNG"] {
             XCTAssertEqual(button(title, in: root)?.imagePosition, .imageLeading, "\(title) must display its label, not just its symbol")
         }
         XCTAssertEqual(button("复制", in: root)?.keyEquivalent, "c")
@@ -309,7 +420,7 @@ final class GlassInterfaceTests: XCTestCase {
             window.setFrame(NSRect(origin: .zero, size: window.minSize), display: false)
             let root = try XCTUnwrap(window.contentView)
             root.layoutSubtreeIfNeeded()
-            for title in ["复制", "保存位置…", "丢弃", "保存 PNG", "完成"] {
+            for title in ["复制", "分享", "保存位置…", "丢弃", "保存 PNG", "完成"] {
                 let action = try XCTUnwrap(button(title, in: root))
                 let frame = root.convert(action.bounds, from: action)
                 XCTAssertTrue(root.bounds.contains(frame), "\(title) falls outside the minimum window in \(name)")
@@ -378,7 +489,7 @@ final class GlassInterfaceTests: XCTestCase {
         window.setFrame(NSRect(origin: .zero, size: window.minSize), display: false)
         let root = try XCTUnwrap(window.contentView)
         root.layoutSubtreeIfNeeded()
-        for title in ["复制", "保存位置…", "分段导出…", "丢弃", "保存全部 PNG", "完成"] {
+        for title in ["复制", "分享", "保存位置…", "分段导出…", "丢弃", "保存全部 PNG", "完成"] {
             let action = try XCTUnwrap(button(title, in: root))
             XCTAssertTrue(root.bounds.contains(root.convert(action.bounds, from: action)), title)
             XCTAssertFalse(action.isHiddenOrHasHiddenAncestor)
@@ -424,4 +535,10 @@ final class GlassInterfaceTests: XCTestCase {
             return true
         }
     }
+}
+
+@MainActor
+private final class TestResultDragSource: ResultDragSourceView {
+    var started = 0
+    override func startImageDrag(_ item: NSDraggingItem, event: NSEvent) { started += 1 }
 }

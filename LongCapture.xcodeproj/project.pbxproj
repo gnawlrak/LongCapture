@@ -1,5 +1,7 @@
 // !$*UTF8*$!
 { archiveVersion = 1; classes = {}; objectVersion = 77; objects = {
+		F030_r = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "LongCapture/Source/UI/ResultTransfer.swift"; sourceTree = SOURCE_ROOT; };
+		F030_s = {isa = PBXBuildFile; fileRef = F030_r; };
 		F029_r = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "LongCapture/Source/Core/CaptureDocument.swift"; sourceTree = SOURCE_ROOT; };
 		F029_s = {isa = PBXBuildFile; fileRef = F029_r; };
 		F028_r = {isa = PBXFileReference; lastKnownFileType = text; path = LICENSE; sourceTree = SOURCE_ROOT; };
@@ -71,6 +73,7 @@
 			Tests/StitchingTests.swift /* StitchingTests.swift */,
 		); path = Tests; sourceTree = "<group>"; };
 		LongCapture /* LongCapture */ = {isa = PBXGroup; children = (
+			F030_r,
 			F029_r,
 			F026_r,
 			F024_r,
@@ -94,6 +97,7 @@
 		LongCaptureTestsTarget = {isa = PBXNativeTarget; buildConfigurationList = LongCaptureTestsConfigList; buildPhases = (LongCaptureTestsSources,); buildRules = (); dependencies = (LongCaptureDependency,); name = LongCaptureTests; productName = LongCaptureTests; productReference = LongCaptureTests.xctest; productType = "com.apple.product-type.bundle.unit-test"; };
 		LongCaptureTarget = {isa = PBXNativeTarget; buildConfigurationList = LongCaptureConfigList; buildPhases = (LongCaptureSources, LongCaptureResources); buildRules = (); dependencies = (); name = LongCapture; productName = LongCapture; productReference = LongCapture.app; productType = "com.apple.product-type.application"; };
 		LongCaptureSources = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (
+			F030_s,
 			F029_s,
 			F026_s,
 			F024_s,

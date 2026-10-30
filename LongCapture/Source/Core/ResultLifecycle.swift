@@ -11,6 +11,7 @@ final class ResultLifecycle {
     private var deadline: TimeInterval?
     private var countdownEnabled: Bool
     private var isHovered = false
+    private var isInteracting = false
     private var saveReturnState: State = .thumbnail
 
     init(presentation: Presentation = .thumbnail, delay: TimeInterval = 5,
@@ -29,10 +30,20 @@ final class ResultLifecycle {
     func setHovered(_ hovered: Bool) {
         guard state == .thumbnail, isHovered != hovered else { return }
         isHovered = hovered
-        if hovered, let deadline {
+        refreshCountdown()
+    }
+
+    func setInteracting(_ interacting: Bool) {
+        guard state == .thumbnail, isInteracting != interacting else { return }
+        isInteracting = interacting
+        refreshCountdown()
+    }
+
+    private func refreshCountdown() {
+        if isHovered || isInteracting, let deadline {
             remaining = max(0, deadline - now())
             self.deadline = nil
-        } else if !hovered, countdownEnabled {
+        } else if !isHovered, !isInteracting, countdownEnabled, deadline == nil {
             deadline = now() + remaining
         }
     }

@@ -359,6 +359,10 @@ final class AppController: NSObject {
 
     /// Returning false keeps a failed save or an interrupted capture alive instead of losing it on Quit.
     func requestTermination() async -> Bool {
+        if ResultDragSourceView.hasActiveDrag || ResultTransferPayload.hasActiveWrites {
+            alert(title: "正在传送图片", message: "请等待拖放和 PNG 副本写入完成后再退出，原始截图仍然保留。")
+            return false
+        }
         if isExporting {
             alert(title: "正在分段导出", message: "请等待导出完成后再退出，原始长图仍保留。")
             return false

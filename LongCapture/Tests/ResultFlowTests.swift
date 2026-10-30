@@ -6,6 +6,87 @@ import XCTest
 @testable import LongCapture
 
 final class ResultFlowTests: XCTestCase {
+    func testDragPausesThumbnailEvenAfterMouseLeavesAndResumesRemainingTime() {
+        let clock = TestResultClock()
+        let lifecycle = ResultLifecycle(now: { clock.time })
+        clock.time = 2
+        lifecycle.setHovered(true)
+        lifecycle.setInteracting(true)
+        lifecycle.setHovered(false)
+        clock.time = 100
+        XCTAssertFalse(lifecycle.tick())
+        lifecycle.setInteracting(false)
+        clock.time = 102.999
+        XCTAssertFalse(lifecycle.tick())
+        clock.time = 103
+        XCTAssertTrue(lifecycle.tick())
+        XCTAssertFalse(lifecycle.tick())
+    }
+
+    @MainActor
+    func testDragPromiseAdvertisesPNGAndPreservesPixelsWithoutChangingClipboard() throws {
+        let original = try makeResultImage()
+        let image = NSImage(cgImage: original, size: NSSize(width: original.width / 2, height: original.height / 2))
+        let view = ResultDragSourceView(frame: CGRect(x: 0, y: 0, width: 160, height: 160), image: image)
+        let before = NSPasteboard.general.changeCount
+        let item = try view.draggingItem(at: CGPoint(x: 30, y: 30))
+        let provider = try XCTUnwrap(item.item as? ResultFilePromiseProvider)
+        let board = NSPasteboard(name: NSPasteboard.Name("LongCapture.TransferTest.\(UUID().uuidString)"))
+        defer { board.releaseGlobally() }
+        XCTAssertEqual(provider.fileType, "public.png")
+        XCTAssertTrue(provider.writableTypes(for: board).contains(.png))
+        XCTAssertTrue(board.writeObjects([provider]))
+        let data = try XCTUnwrap(board.data(forType: .png))
+        let source = try XCTUnwrap(CGImageSourceCreateWithData(data as CFData, nil))
+        let decoded = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
+        XCTAssertEqual(decoded.width, original.width)
+        XCTAssertEqual(decoded.height, original.height)
+        XCTAssertEqual(try rgbaBytes(decoded), try rgbaBytes(original))
+        XCTAssertEqual(NSPasteboard.general.changeCount, before)
+    }
+
+    func testPromiseWritesAtomicallyWithoutOverwriteOrOrphanedTemporaryFiles() throws {
+        let directory = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let original = try makeResultImage(), payload = ResultTransferPayload(image: original)
+        let target = directory.appendingPathComponent("dragged.png")
+        try payload.writePNG(to: target)
+        let first = try Data(contentsOf: target)
+        XCTAssertThrowsError(try payload.writePNG(to: target))
+        XCTAssertEqual(try Data(contentsOf: target), first)
+        XCTAssertThrowsError(try payload.writePNG(to: target.appendingPathComponent("unwritable.png")))
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: directory.path), ["dragged.png"])
+        let attributes = try FileManager.default.attributesOfItem(atPath: target.path)
+        XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o600)
+        let source = try XCTUnwrap(CGImageSourceCreateWithURL(target as CFURL, nil))
+        XCTAssertEqual(try rgbaBytes(XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))), try rgbaBytes(original))
+    }
+
+    @MainActor
+    func testPromiseRetainsPixelsAfterSourceIsReleasedAndWritesOffMainThread() async throws {
+        let directory = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        var payload: ResultTransferPayload? = ResultTransferPayload(image: try makeResultImage())
+        weak var retained = payload
+        let provider = ResultFilePromiseProvider(payload: try XCTUnwrap(payload))
+        payload = nil
+        XCTAssertNotNil(retained, "The receiver must not depend on an open preview or an existing archive")
+        let transfer = try XCTUnwrap(retained)
+        XCTAssertTrue(provider.delegate === transfer)
+        let completed = expectation(description: "Promised PNG written")
+        let target = directory.appendingPathComponent("promised.png")
+        transfer.operationQueue(for: provider).addOperation {
+            XCTAssertFalse(Thread.isMainThread)
+            transfer.filePromiseProvider(provider, writePromiseTo: target) { error in
+                XCTAssertTrue(ResultTransferPayload.hasActiveWrites)
+                XCTAssertNil(error)
+                completed.fulfill()
+            }
+        }
+        await fulfillment(of: [completed], timeout: 5)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: target.path))
+    }
+
     func testUntouchedThumbnailRequestsSaveAtFiveSecondsOnlyOnce() {
         let clock = TestResultClock()
         let lifecycle = ResultLifecycle(now: { clock.time })
