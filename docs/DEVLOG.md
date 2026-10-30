@@ -1,5 +1,15 @@
 # Development Log
 
+## 2026-10-30 - Slice 22: remove manual axis switching from capture entry
+
+Contract: one menu/shortcut entry starts automatic axis detection. Selection has no manual axis switcher, while drag/resize, Return/Escape, recovery, reverse visits and existing matching safety remain intact. Do not change the stitching algorithm or claim uniform content is now matchable.
+
+- Replace the explicit-axis UI test with an automatic-guidance/no-switcher regression first. It fails once on the old segmented control (`build/automatic-only-red.log`). Remove the control, axis-change handler, selection-axis API and separate horizontal menu entry; `AppController` explicitly begins capture with `.automatic`. Preserve core explicit-axis APIs for deterministic tests.
+- Keep automatic-direction guidance before and after selection. Update the fixture renderer to exercise an empty automatic selection instead of the removed horizontal override. Full optimized hosted XCTest passes 158/158, zero failures (`build/automatic-only-full-tests.log`), including real-Vision automatic axis and all recovery/result tests. Existing Vision cache diagnostics remain; no cache or matching threshold changes.
+- Render 22 offscreen light/dark fixtures and inspect selected-light/empty-dark layouts. README and architecture now document the single automatic entry; acceptance distinguishes layout evidence from production screen capture. No new permission, dependency, signing identity, login-item or public-release change.
+- Independent `build/AutomaticOnlyRelease/LongCapture.app` passes Release build, icon, both license resources, strict signing and changed-content identity regression. Back up to `build/Backups/20261030-123030-automatic-only/Release.app`; normally terminate PID 70729 and observe exit before replacement, retaining the displaced package as `InstalledRelease.app`. Installed executable and designated requirement match the verified build/original identity; PID 79703 finishes launching from the usual Release path. Logs: `build/automatic-only-{release-build,signing,install}.log`.
+- Stop decision: keep this UI simplification as one focused local commit, without pushing or altering the already-validated gallery algorithm. Pure-color ambiguity and mixed-axis captures remain outside this slice.
+
 ## 2026-10-30 - Slice 21: reproduce continuous gallery capture with snap enabled
 
 Contract: carry the uniquely verified rigid boundary through native, snap-enabled gallery scrolling without letting a texture-less shorter white fragment veto it. Preserve true periodic ambiguity, independent overlap/seams, frozen-table matching, backpressure and result ownership. Static frame replay is not production acceptance.

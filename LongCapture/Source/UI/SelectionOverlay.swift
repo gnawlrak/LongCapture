@@ -8,7 +8,6 @@ final class SelectionOverlay: NSWindowController {
     private var resolved = false
 
     init(displayRect: CGRect, safeTopInset: CGFloat? = nil,
-         initialAxis: CaptureAxis = .automatic,
          onBegin: @escaping (CGRect) -> Void, onCancel: @escaping () -> Void) {
         self.displayRect = displayRect
         self.onBegin = onBegin
@@ -17,7 +16,7 @@ final class SelectionOverlay: NSWindowController {
         // The menu bar can be taller than the notch safe area, or hidden independently of it.
         let systemTopInset = screen.map { max($0.frame.maxY - $0.visibleFrame.maxY, $0.safeAreaInsets.top) } ?? 0
         self.selectionView = SelectionView(frame: CGRect(origin: .zero, size: displayRect.size),
-                                           safeTopInset: max(0, safeTopInset ?? systemTopInset), axis: initialAxis)
+                                           safeTopInset: max(0, safeTopInset ?? systemTopInset))
         let window = SelectionWindow(contentRect: displayRect, styleMask: .borderless, backing: .buffered, defer: false)
         window.isOpaque = false
         window.backgroundColor = .clear
@@ -36,8 +35,6 @@ final class SelectionOverlay: NSWindowController {
     var currentSelection: CGRect? {
         selectionView.selection.map { $0.offsetBy(dx: displayRect.minX, dy: displayRect.minY) }
     }
-    var selectedAxis: CaptureAxis { selectionView.axis }
-
     func show() {
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
@@ -70,24 +67,15 @@ private final class SelectionView: NSView {
     var onCancel: (() -> Void)?
     private let instructions = NativeGlassView(cornerRadius: 24)
     private let dimensions = NativeGlassView(cornerRadius: 12, interactive: false)
-    private let titleLabel = NSTextField(labelWithString: "框选要拼接的滚动区域")
-    private let noteLabel = NSTextField(wrappingLabelWithString: "只框正文，避开固定标题、侧栏、输入框和动画。")
+    private let titleLabel = NSTextField(labelWithString: "框选后直接滚动 · 自动识别横向或纵向")
+    private let noteLabel = NSTextField(wrappingLabelWithString: "只框正文，避开固定栏和动画；采集中不能混合横纵滚动。")
     private let dimensionLabel = NSTextField(labelWithString: "")
     private var beginButton: NSButton!
     private var dragStart: CGPoint?
     private var initialRect: CGRect = .zero
     private var dragMode: DragMode = .new
     private enum DragMode { case new, move, resize(Int) }
-    private let axisControl = NSSegmentedControl(labels: ["自动", "纵向", "横向"], trackingMode: .selectOne, target: nil, action: nil)
-    var axis: CaptureAxis {
-        switch axisControl.selectedSegment {
-        case 1: return .vertical
-        case 2: return .horizontal
-        default: return .automatic
-        }
-    }
-
-    init(frame frameRect: NSRect, safeTopInset: CGFloat, axis: CaptureAxis) {
+    init(frame frameRect: NSRect, safeTopInset: CGFloat) {
         super.init(frame: frameRect)
         titleLabel.font = .systemFont(ofSize: 14, weight: .semibold)
         noteLabel.font = .systemFont(ofSize: 12)
@@ -97,11 +85,6 @@ private final class SelectionView: NSView {
         labels.orientation = .vertical
         labels.alignment = .leading
         labels.spacing = 5
-        axisControl.selectedSegment = axis == .automatic ? 0 : axis == .vertical ? 1 : 2
-        axisControl.target = self
-        axisControl.action = #selector(axisChanged)
-        axisControl.setAccessibilityLabel("长截图方向，默认自动识别，也可指定纵向或横向")
-        labels.addArrangedSubview(axisControl)
         labels.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         let cancel = NSButton(title: "取消", target: self, action: #selector(cancelClicked))
         NativeUI.styleAction(cancel)
@@ -139,20 +122,10 @@ private final class SelectionView: NSView {
             dimensionLabel.trailingAnchor.constraint(equalTo: dimensions.contentView.trailingAnchor, constant: -12),
             dimensionLabel.centerYAnchor.constraint(equalTo: dimensions.contentView.centerYAnchor)
         ])
-        setAccessibilityLabel("拖动框选滚动区域，回车开始，Esc 取消")
-        axisChanged()
+        setAccessibilityLabel("拖动框选滚动区域，回车开始，Esc 取消，自动识别横向或纵向")
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
-
-    @objc private func axisChanged() {
-        switch axis {
-        case .automatic: titleLabel.stringValue = "框选后直接滚动 · 自动识别横向或纵向"
-        case .vertical: titleLabel.stringValue = "框选纵向滚动区域 · 向上或向下滚动"
-        case .horizontal: titleLabel.stringValue = "框选横向滚动区域 · 向左或向右滚动"
-        }
-        noteLabel.stringValue = "只框正文，避开固定栏和动画；采集中不能混合横纵滚动。"
-    }
 
     override var acceptsFirstResponder: Bool { true }
     override func resetCursorRects() { addCursorRect(bounds, cursor: .crosshair) }
@@ -204,8 +177,8 @@ private final class SelectionView: NSView {
     private func updateSelectionPresentation() {
         let valid = selection.map { $0.width >= 24 && $0.height >= 24 } ?? false
         beginButton.isEnabled = valid
-        titleLabel.stringValue = valid ? "调整范围，回车开始" : "框选要拼接的滚动区域"
-        noteLabel.stringValue = valid ? "拖动内部移动 · 拖动边缘调整 · Esc 取消" : "只框正文，避开固定标题、侧栏、输入框和动画。"
+        titleLabel.stringValue = valid ? "调整范围，回车开始 · 自动识别横纵方向" : "框选后直接滚动 · 自动识别横向或纵向"
+        noteLabel.stringValue = valid ? "拖动内部移动 · 拖动边缘调整 · Esc 取消" : "只框正文，避开固定栏和动画；采集中不能混合横纵滚动。"
         dimensions.isHidden = !valid
         guard valid, let selection else { return }
         let scale = window?.backingScaleFactor ?? 1

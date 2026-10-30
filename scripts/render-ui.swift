@@ -79,10 +79,10 @@ struct RenderInterface {
             }
             try await render(selection.window!, name: "selection-\(label)", appearance: appearance, into: output)
             selection.close()
-            let horizontalSelection = SelectionOverlay(displayRect: display, safeTopInset: 33, initialAxis: .horizontal,
-                                                       onBegin: { _ in }, onCancel: {})
-            try await render(horizontalSelection.window!, name: "selection-horizontal-\(label)", appearance: appearance, into: output)
-            horizontalSelection.close()
+            let emptySelection = SelectionOverlay(displayRect: display, safeTopInset: 33,
+                                                  onBegin: { _ in }, onCancel: {})
+            try await render(emptySelection.window!, name: "selection-empty-\(label)", appearance: appearance, into: output)
+            emptySelection.close()
 
             let existing = Set(app.windows.map(ObjectIdentifier.init))
             let capture = CaptureOverlay(displayRect: display, region: CGRect(x: 180, y: 140, width: 920, height: 480),

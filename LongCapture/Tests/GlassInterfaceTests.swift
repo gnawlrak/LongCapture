@@ -321,24 +321,20 @@ final class GlassInterfaceTests: XCTestCase {
     }
 
     @MainActor
-    func testSelectionAllowsExplicitAxisChoiceWithoutChangingGeometry() throws {
+    func testSelectionUsesAutomaticGuidanceWithoutAxisSwitcher() throws {
         _ = NSApplication.shared
         let overlay = SelectionOverlay(displayRect: CGRect(x: 0, y: 0, width: 1280, height: 800),
-                                       initialAxis: .horizontal, onBegin: { _ in }, onCancel: {})
+                                       onBegin: { _ in }, onCancel: {})
         defer { overlay.close() }
-        XCTAssertEqual(overlay.selectedAxis, .horizontal)
         let root = try XCTUnwrap(overlay.window?.contentView)
-        let control = try XCTUnwrap(descendants(in: root).compactMap { $0 as? NSSegmentedControl }.first)
-        XCTAssertEqual(control.label(forSegment: 0), "自动")
-        XCTAssertEqual(control.label(forSegment: 2), "横向")
-        control.selectedSegment = 1
-        NSApp.sendAction(try XCTUnwrap(control.action), to: control.target, from: control)
-        XCTAssertEqual(overlay.selectedAxis, .vertical)
+        XCTAssertTrue(descendants(in: root).compactMap { $0 as? NSSegmentedControl }.isEmpty,
+                      "Capture direction is automatic, so selection must not expose a manual axis switcher")
+        XCTAssertTrue(descendants(in: root).compactMap { $0 as? NSTextField }.contains {
+            $0.stringValue.contains("自动识别")
+        })
         XCTAssertNil(overlay.currentSelection)
-        let automatic = SelectionOverlay(displayRect: CGRect(x: 0, y: 0, width: 1280, height: 800),
-                                         onBegin: { _ in }, onCancel: {})
-        defer { automatic.close() }
-        XCTAssertEqual(automatic.selectedAxis, .automatic)
+        XCTAssertFalse(try XCTUnwrap(button("开始截图", in: root)).isEnabled)
+        XCTAssertEqual(try XCTUnwrap(button("取消", in: root)).keyEquivalent, "\u{1b}")
     }
 
     @MainActor

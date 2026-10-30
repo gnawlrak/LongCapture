@@ -1,5 +1,12 @@
 # 验证与本机验收
 
+## 统一自动识别入口（2026-10-30）
+
+- 移除选区的「自动 / 纵向 / 横向」切换和菜单中的独立横向入口。菜单与快捷键都进入同一个自动识别会话；空选区和调整选区时均保留自动识别提示。拼接、恢复与锁轴规则未修改，纯色或重复图案仍可能需要恢复。
+- 先替换旧的手动切换 UI 测试，新测试在旧实现上因仍存在切换控件而失败。实现后，完整优化 XCTest 共 158 项通过、0 失败，覆盖自动识别、微动尾帧、反向回看、恢复、自动续张及原有结果流程。日志：`build/automatic-only-red.log`、`build/automatic-only-full-tests.log`。系统 Vision 仍有既存的 `MDB_MAP_FULL` 诊断，未修改系统缓存。
+- `scripts/render-ui.sh` 生成 22 张浅深色离屏布局图；已检查框选后的浅色和空选区的深色提示，方向切换不存在。渲染脚本的旧横向专用选区改为空选区样例。离屏布局不是系统合成材质或真实页面采集验收，本次未重新采集用户页面。
+- 独立 Release 构建、图标、MIT/第三方许可、严格签名及内容变更身份回归通过。旧 App 正常退出后才替换，本机新版从原路径启动，证书身份要求与旧包一致；没有修改系统授权或登录项。旧包保存在 `build/Backups/20261030-123030-automatic-only/`，日志在 `build/automatic-only-release-build.log`、`build/automatic-only-signing.log` 和 `build/automatic-only-install.log`。未推送或发布新 Release。
+
 ## 已验证（2026-10-27 至 29，分片记录）
 
 环境：Apple Silicon / macOS 27.2，Xcode 27.1、Swift 6.4；编译部署目标 macOS 14.0。没有在真实 macOS 14 系统上运行。

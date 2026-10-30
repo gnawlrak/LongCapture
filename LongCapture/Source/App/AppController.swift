@@ -39,9 +39,6 @@ final class AppController: NSObject {
         let menu = NSMenu()
         beginMenuItem.target = self
         menu.addItem(beginMenuItem)
-        let horizontal = NSMenuItem(title: "开始横向长截图", action: #selector(beginHorizontalSelection), keyEquivalent: "")
-        horizontal.target = self
-        menu.addItem(horizontal)
         let permissionItem = NSMenuItem(title: "屏幕录制权限…", action: #selector(showPermissionSettings), keyEquivalent: "")
         permissionItem.target = self
         menu.addItem(permissionItem)
@@ -62,12 +59,6 @@ final class AppController: NSObject {
     }
 
     @objc func beginSelection() {
-        presentSelection(axis: .automatic)
-    }
-
-    @objc private func beginHorizontalSelection() { presentSelection(axis: .horizontal) }
-
-    private func presentSelection(axis: CaptureAxis) {
         if activeResult != nil { openPreview(); return }
         if coordinator.state == .capturing { Task { await coordinator.complete() }; return }
         guard coordinator.state == .idle, !screenCapturePermission.isRequesting, !isPresentingPermissionAlert else { return }
@@ -78,13 +69,12 @@ final class AppController: NSObject {
         guard requestScreenCapturePermission(), coordinator.state == .idle else { return }
         coordinator.prepareForSelection()
         let displayFrame = screen.frame, scale = screen.backingScaleFactor
-        selectionOverlay = SelectionOverlay(displayRect: displayFrame, initialAxis: axis, onBegin: { [weak self] rect in
+        selectionOverlay = SelectionOverlay(displayRect: displayFrame, onBegin: { [weak self] rect in
             guard let self else { return }
-            let axis = self.selectionOverlay?.selectedAxis ?? axis
             self.selectionOverlay = nil
             do {
                 let geometry = try CaptureGeometry(displayID: displayID, displayFrame: displayFrame, selection: rect, scale: scale)
-                self.startCapture(geometry: geometry, axis: axis)
+                self.startCapture(geometry: geometry)
             } catch {
                 Task { await self.coordinator.cancel(); self.showCaptureError(error) }
             }
@@ -97,7 +87,7 @@ final class AppController: NSObject {
         selectionOverlay?.show()
     }
 
-    private func startCapture(geometry: CaptureGeometry, axis: CaptureAxis) {
+    private func startCapture(geometry: CaptureGeometry) {
         selectionOverlay?.close()
         selectionOverlay = nil
         captureOverlay = CaptureOverlay(displayRect: geometry.displayFrame, region: geometry.globalRect,
@@ -109,7 +99,7 @@ final class AppController: NSObject {
             })
         captureOverlay?.show()
         originalApplication?.activate()
-        Task { await coordinator.beginCapture(geometry: geometry, axis: axis) }
+        Task { await coordinator.beginCapture(geometry: geometry, axis: .automatic) }
     }
 
     private func shortcutPressed() {
