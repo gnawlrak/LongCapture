@@ -5,6 +5,285 @@ import XCTest
 
 final class GlassInterfaceTests: XCTestCase {
     @MainActor
+    func testShortcutRecordingSwitchesRowsWithoutResumingAndClosesSafely() async throws {
+        _ = NSApplication.shared
+        var recording: [Bool] = [], confirmation: [HotKeyShortcut] = [], quick: [HotKeyShortcut] = []
+        let controller = SettingsWindowController(saveDirectory: URL(fileURLWithPath: "/tmp"),
+            shortcut: .defaultShortcut, permission: ScreenCapturePermission(preflight: { true }),
+            loginItem: inactiveLoginItem(), onRequestPermission: {}, onOpenPermissionSettings: {},
+            onDirectoryChanged: { _ in }, onShortcutChanged: { confirmation.append($0) },
+            onQuickShortcutChanged: { quick.append($0) }, onRecordingChanged: { recording.append($0) })
+        defer { controller.close() }
+        let window = try XCTUnwrap(controller.window), root = try XCTUnwrap(window.contentView)
+        root.layoutSubtreeIfNeeded()
+        func recorder(_ label: String) throws -> NSButton {
+            try XCTUnwrap(descendants(in: root).compactMap { $0 as? NSButton }.first {
+                $0.accessibilityLabel() == label
+            })
+        }
+        let manualButton = try recorder("录入调整模式快捷键")
+        let quickButton = try recorder("录入快速模式快捷键")
+        manualButton.performClick(nil)
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertEqual(recording, [true])
+        XCTAssertEqual(manualButton.title, "请按快捷键…")
+        XCTAssertEqual(quickButton.title, "⌃⌥⇧S")
+        quickButton.performClick(nil)
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertEqual(recording, [true], "Switching recorders must keep both hotkeys suspended")
+        XCTAssertEqual(manualButton.title, "⌃⌥S")
+        XCTAssertEqual(quickButton.title, "请按快捷键…")
+        let invalidKey = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero,
+            modifierFlags: [.shift], timestamp: 0, windowNumber: window.windowNumber,
+            context: nil, characters: "R", charactersIgnoringModifiers: "r", isARepeat: false, keyCode: 15))
+        NSApp.sendEvent(invalidKey)
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertTrue(quick.isEmpty)
+        XCTAssertEqual(recording, [true], "Invalid combinations must leave recording and suspension active")
+        let key = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero,
+            modifierFlags: [.control, .option], timestamp: 0, windowNumber: window.windowNumber,
+            context: nil, characters: "r", charactersIgnoringModifiers: "r", isARepeat: false, keyCode: 15))
+        NSApp.sendEvent(key)
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertEqual(quick, [HotKeyShortcut(keyCode: 15, modifiers: HotKeyShortcut.defaultShortcut.modifiers)])
+        XCTAssertTrue(confirmation.isEmpty)
+        XCTAssertEqual(recording, [true, false])
+        XCTAssertEqual(quickButton.title, "⌃⌥R")
+        manualButton.performClick(nil)
+        NSApp.sendEvent(try selectionKey(53, in: window))
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertEqual(recording, [true, false, true, false])
+        XCTAssertTrue(confirmation.isEmpty)
+        quickButton.performClick(nil)
+        controller.close()
+        XCTAssertEqual(recording, [true, false, true, false, true, false])
+        NSApp.sendEvent(key)
+        XCTAssertEqual(quick.count, 1, "Closing settings must remove the recording monitor")
+    }
+
+    @MainActor
+    func testShortcutAssignmentsAndAuthoritativeUpdatesRemainIndependent() async throws {
+        _ = NSApplication.shared
+        let custom = HotKeyShortcut(keyCode: 15, modifiers: HotKeyShortcut.defaultShortcut.modifiers)
+        var changes: [(CaptureShortcutAction, HotKeyShortcut)] = []
+        let controller = SettingsWindowController(saveDirectory: URL(fileURLWithPath: "/tmp"), shortcut: custom,
+            permission: ScreenCapturePermission(preflight: { true }), loginItem: inactiveLoginItem(),
+            quickShortcut: nil, shortcutMessages: [.quick: "快速模式组合不可用，请修改。"],
+            onRequestPermission: {}, onOpenPermissionSettings: {}, onDirectoryChanged: { _ in },
+            onShortcutChanged: { changes.append((.confirmation, $0)) },
+            onQuickShortcutChanged: { changes.append((.quick, $0)) })
+        defer { controller.close() }
+        let root = try XCTUnwrap(controller.window?.contentView)
+        root.layoutSubtreeIfNeeded()
+        func labeledButton(_ label: String) throws -> NSButton {
+            try XCTUnwrap(descendants(in: root).compactMap { $0 as? NSButton }.first {
+                $0.accessibilityLabel() == label
+            }, "Missing \(label); native buttons: \(descendants(in: root).compactMap { ($0 as? NSButton).map { ($0.title, $0.accessibilityLabel()) } })")
+        }
+        let manualButton = try labeledButton("录入调整模式快捷键")
+        let quickButton = try labeledButton("录入快速模式快捷键")
+        XCTAssertEqual(manualButton.title, "⌃⌥R")
+        XCTAssertEqual(quickButton.title, "未设置")
+        func record(_ button: NSButton, flags: NSEvent.ModifierFlags) throws {
+            button.performClick(nil)
+            let window = try XCTUnwrap(controller.window)
+            NSApp.sendEvent(try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero,
+                modifierFlags: flags, timestamp: 0, windowNumber: window.windowNumber,
+                context: nil, characters: "s", charactersIgnoringModifiers: "s", isARepeat: false, keyCode: 1)))
+        }
+        try record(quickButton, flags: [.control, .option, .shift])
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertEqual(manualButton.title, "⌃⌥R")
+        XCTAssertEqual(quickButton.title, "⌃⌥⇧S")
+        try record(manualButton, flags: [.control, .option])
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertEqual(changes.map(\.0), [.quick, .confirmation])
+        XCTAssertEqual(changes.map(\.1), [.defaultQuickShortcut, .defaultShortcut])
+        controller.update(saveDirectory: URL(fileURLWithPath: "/tmp"), shortcut: custom,
+                          quickShortcut: nil, shortcutMessages: [.quick: "两个截图快捷键不能相同。"])
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertEqual(manualButton.title, "⌃⌥R")
+        XCTAssertEqual(quickButton.title, "未设置", "Rejected input must display the authoritative configuration")
+    }
+
+    @MainActor
+    func testSelectionPixelDimensionsUseAlignedRetinaCoordinates() throws {
+        _ = NSApplication.shared
+        let display = CGRect(x: -1280, y: -300, width: 1280, height: 800)
+        for mode in [SelectionStartMode.confirmation, .onRelease] {
+            let overlay = SelectionOverlay(displayRect: display, startMode: mode, scale: 2,
+                                           onBegin: { _ in }, onCancel: {})
+            defer { overlay.close() }
+            let window = try XCTUnwrap(overlay.window), root = try XCTUnwrap(window.contentView)
+            root.mouseDown(with: try selectionMouse(.leftMouseDown, at: CGPoint(x: 100.25, y: 100.25), in: window))
+            root.mouseDragged(with: try selectionMouse(.leftMouseDragged, at: CGPoint(x: 500.25, y: 400.25), in: window))
+            let geometry = try CaptureGeometry(displayID: 0, displayFrame: display,
+                                              selection: XCTUnwrap(overlay.currentSelection), scale: 2)
+            XCTAssertEqual(geometry.pixelWidth, 801)
+            XCTAssertEqual(geometry.pixelHeight, 601)
+            let label = try XCTUnwrap(descendants(in: root).compactMap { $0 as? NSTextField }.first {
+                $0.stringValue.hasSuffix(" px")
+            })
+            XCTAssertEqual(label.stringValue, "801 × 601 px")
+        }
+    }
+
+    @MainActor
+    func testSettingsProvidesIndependentConfirmationAndQuickShortcutRecorders() throws {
+        _ = NSApplication.shared
+        let permission = ScreenCapturePermission(preflight: { true }, requestAccess: {
+            XCTFail("Settings must not ask for extra permissions"); return false
+        }, openSettings: { _ in true })
+        let controller = SettingsWindowController(saveDirectory: URL(fileURLWithPath: "/tmp"),
+            shortcut: .defaultShortcut, permission: permission, loginItem: inactiveLoginItem(),
+            onRequestPermission: {}, onOpenPermissionSettings: {}, onDirectoryChanged: { _ in },
+            onShortcutChanged: { _ in })
+        defer { controller.close() }
+        let root = try XCTUnwrap(controller.window?.contentView)
+        root.layoutSubtreeIfNeeded()
+        let recorders = descendants(in: root).compactMap { $0 as? NSButton }.filter {
+            $0.accessibilityLabel()?.contains("快捷键") == true
+        }
+        XCTAssertEqual(recorders.count, 2)
+        XCTAssertTrue(recorders.contains { $0.title == "⌃⌥S" })
+        XCTAssertTrue(recorders.contains { $0.title == "⌃⌥⇧S" })
+    }
+
+    @MainActor
+    func testQuickSelectionUsesReleasePointInAllDirectionsAndStartsOnlyOnce() throws {
+        _ = NSApplication.shared
+        let display = CGRect(x: -1280, y: -300, width: 1280, height: 800)
+        for scale: CGFloat in [1, 2] {
+            for (start, end) in [(CGPoint(x: 100, y: 100), CGPoint(x: 500, y: 400)),
+                                 (CGPoint(x: 500, y: 100), CGPoint(x: 100, y: 400)),
+                                 (CGPoint(x: 100, y: 400), CGPoint(x: 500, y: 100)),
+                                 (CGPoint(x: 500, y: 400), CGPoint(x: 100, y: 100))] {
+                var captured: [CGRect] = []
+                let overlay = SelectionOverlay(displayRect: display, startMode: .onRelease, scale: scale,
+                                               onBegin: { captured.append($0) }, onCancel: {})
+                defer { overlay.close() }
+                let window = try XCTUnwrap(overlay.window)
+                let root = try XCTUnwrap(window.contentView)
+                root.mouseDown(with: try selectionMouse(.leftMouseDown, at: start, in: window))
+                root.mouseDragged(with: try selectionMouse(.leftMouseDragged, at: CGPoint(x: 300, y: 250), in: window))
+                overlay.begin()
+                XCTAssertTrue(captured.isEmpty)
+                root.mouseUp(with: try selectionMouse(.leftMouseUp, at: end, in: window))
+                XCTAssertEqual(captured, [CGRect(x: -1180, y: -200, width: 400, height: 300)])
+                let geometry = try CaptureGeometry(displayID: 0, displayFrame: display,
+                                                  selection: XCTUnwrap(captured.first), scale: scale)
+                XCTAssertEqual(geometry.pixelWidth, Int(400 * scale))
+                XCTAssertEqual(geometry.pixelHeight, Int(300 * scale))
+                root.mouseUp(with: try selectionMouse(.leftMouseUp, at: end, in: window))
+                root.mouseDragged(with: try selectionMouse(.leftMouseDragged, at: start, in: window))
+                overlay.begin()
+                XCTAssertEqual(captured.count, 1)
+            }
+        }
+    }
+
+    @MainActor
+    func testQuickSelectionRejectsClicksAndPixelTooSmallRegionsThenAllowsRedraw() throws {
+        _ = NSApplication.shared
+        for scale: CGFloat in [1, 2] {
+            var captured: [CGRect] = []
+            let overlay = SelectionOverlay(displayRect: CGRect(x: 0, y: 0, width: 1280, height: 800),
+                startMode: .onRelease, scale: scale, onBegin: { captured.append($0) }, onCancel: {})
+            defer { overlay.close() }
+            let window = try XCTUnwrap(overlay.window), root = try XCTUnwrap(window.contentView)
+            let origin = CGPoint(x: 100, y: 100)
+            for end in [origin, CGPoint(x: 124, y: 124), CGPoint(x: 147, y: 131)] {
+                root.mouseDown(with: try selectionMouse(.leftMouseDown, at: origin, in: window))
+                root.mouseUp(with: try selectionMouse(.leftMouseUp, at: end, in: window))
+                XCTAssertTrue(captured.isEmpty)
+                XCTAssertNil(overlay.currentSelection)
+            }
+            root.mouseDown(with: try selectionMouse(.leftMouseDown, at: origin, in: window))
+            let end = CGPoint(x: 100 + 96 / scale, y: 100 + 64 / scale)
+            root.mouseUp(with: try selectionMouse(.leftMouseUp, at: end, in: window))
+            XCTAssertEqual(captured, [CGRect(x: 100, y: 100, width: 96 / scale, height: 64 / scale)])
+        }
+    }
+
+    @MainActor
+    func testQuickSelectionCancellationAndExternalCloseSuppressLateEvents() throws {
+        _ = NSApplication.shared
+        for escape in [true, false] {
+            var started = 0, cancelled = 0
+            let overlay = SelectionOverlay(displayRect: CGRect(x: 0, y: 0, width: 1280, height: 800),
+                startMode: .onRelease, onBegin: { _ in started += 1 }, onCancel: { cancelled += 1 })
+            defer { overlay.close() }
+            let window = try XCTUnwrap(overlay.window), root = try XCTUnwrap(window.contentView)
+            root.mouseDown(with: try selectionMouse(.leftMouseDown, at: CGPoint(x: 100, y: 100), in: window))
+            root.mouseDragged(with: try selectionMouse(.leftMouseDragged, at: CGPoint(x: 500, y: 400), in: window))
+            root.keyDown(with: try selectionKey(36, in: window))
+            overlay.begin()
+            XCTAssertEqual(started, 0)
+            if escape { root.keyDown(with: try selectionKey(53, in: window)) }
+            else { overlay.close() }
+            root.keyDown(with: try selectionKey(53, in: window))
+            root.mouseUp(with: try selectionMouse(.leftMouseUp, at: CGPoint(x: 500, y: 400), in: window))
+            root.mouseDown(with: try selectionMouse(.leftMouseDown, at: CGPoint(x: 100, y: 100), in: window))
+            root.mouseUp(with: try selectionMouse(.leftMouseUp, at: CGPoint(x: 500, y: 400), in: window))
+            XCTAssertEqual(started, 0)
+            XCTAssertEqual(cancelled, escape ? 1 : 0)
+        }
+    }
+
+    @MainActor
+    func testQuickSelectionHasNoConfirmationControlsAndClampsToSelectedDisplay() throws {
+        _ = NSApplication.shared
+        var captured: CGRect?
+        let overlay = SelectionOverlay(displayRect: CGRect(x: -1280, y: 0, width: 1280, height: 800),
+            startMode: .onRelease, scale: 2, onBegin: { captured = $0 }, onCancel: {})
+        defer { overlay.close() }
+        let window = try XCTUnwrap(overlay.window), root = try XCTUnwrap(window.contentView)
+        XCTAssertNil(button("开始截图", in: root))
+        XCTAssertTrue(descendants(in: root).compactMap { $0 as? NSButton }.isEmpty)
+        XCTAssertTrue(root.accessibilityLabel()?.contains("松手开始") == true)
+        root.mouseDown(with: try selectionMouse(.leftMouseDown, at: CGPoint(x: 1200, y: 700), in: window))
+        root.mouseUp(with: try selectionMouse(.leftMouseUp, at: CGPoint(x: 1500, y: 1000), in: window))
+        XCTAssertEqual(captured, CGRect(x: -80, y: 700, width: 80, height: 100))
+    }
+
+    @MainActor
+    private func selectionMouse(_ type: NSEvent.EventType, at point: CGPoint, in window: NSWindow) throws -> NSEvent {
+        try XCTUnwrap(NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: 0,
+            windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+    }
+
+    @MainActor
+    private func selectionKey(_ code: UInt16, in window: NSWindow) throws -> NSEvent {
+        try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+            windowNumber: window.windowNumber, context: nil, characters: "", charactersIgnoringModifiers: "",
+            isARepeat: false, keyCode: code))
+    }
+
+    @MainActor
+    func testSelectionCannotStartWhileMouseIsStillDragging() throws {
+        _ = NSApplication.shared
+        var started = 0
+        let overlay = SelectionOverlay(displayRect: CGRect(x: 0, y: 0, width: 1280, height: 800),
+                                       onBegin: { _ in started += 1 }, onCancel: {})
+        defer { overlay.close() }
+        let window = try XCTUnwrap(overlay.window)
+        let root = try XCTUnwrap(window.contentView)
+        func mouse(_ type: NSEvent.EventType, _ x: CGFloat, _ y: CGFloat) throws -> NSEvent {
+            try XCTUnwrap(NSEvent.mouseEvent(with: type, location: CGPoint(x: x, y: y), modifierFlags: [],
+                timestamp: 0, windowNumber: window.windowNumber, context: nil,
+                eventNumber: 0, clickCount: 1, pressure: 1))
+        }
+        root.mouseDown(with: try mouse(.leftMouseDown, 100, 100))
+        root.mouseDragged(with: try mouse(.leftMouseDragged, 500, 400))
+        overlay.begin()
+        XCTAssertEqual(started, 0, "A repeated shortcut must not begin a half-drawn selection")
+        root.mouseUp(with: try mouse(.leftMouseUp, 500, 400))
+        XCTAssertEqual(started, 0, "Confirmation mode still waits for Return")
+        overlay.begin()
+        XCTAssertEqual(started, 1)
+    }
+
+    @MainActor
     func testShareUsesCurrentPageAndBlocksStaleTransferDuringPageLoading() async throws {
         _ = NSApplication.shared
         let first = sampleImage()

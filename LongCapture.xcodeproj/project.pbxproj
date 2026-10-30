@@ -1,5 +1,7 @@
 // !$*UTF8*$!
 { archiveVersion = 1; classes = {}; objectVersion = 77; objects = {
+		F031_r = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "LongCapture/Tests/CaptureShortcutTests.swift"; sourceTree = SOURCE_ROOT; };
+		F031_s = {isa = PBXBuildFile; fileRef = F031_r; };
 		F030_r = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "LongCapture/Source/UI/ResultTransfer.swift"; sourceTree = SOURCE_ROOT; };
 		F030_s = {isa = PBXBuildFile; fileRef = F030_r; };
 		F029_r = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "LongCapture/Source/Core/CaptureDocument.swift"; sourceTree = SOURCE_ROOT; };
@@ -63,6 +65,7 @@
 		LongCaptureTests.xctest /* LongCaptureTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; path = LongCaptureTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		LongCapture.app /* LongCapture.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; path = LongCapture.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		LongCaptureTests /* LongCaptureTests */ = {isa = PBXGroup; children = (
+			F031_r,
 			F027_r,
 			F025_r,
 			F022_r,
@@ -118,6 +121,7 @@
 			F012_s,
 		); runOnlyForDeploymentPostprocessing = 0; };
 		LongCaptureTestsSources = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (
+			F031_s,
 			F027_s,
 			F025_s,
 			F022_s,

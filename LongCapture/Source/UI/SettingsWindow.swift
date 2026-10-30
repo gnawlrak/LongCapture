@@ -9,18 +9,23 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private let loginItem: LoginItemSettings
 
     init(saveDirectory: URL, shortcut: HotKeyShortcut, permission: ScreenCapturePermission, loginItem: LoginItemSettings,
+         quickShortcut: HotKeyShortcut? = .defaultQuickShortcut,
+         shortcutMessages: [CaptureShortcutAction: String] = [:],
          onRequestPermission: @escaping () -> Void,
          onOpenPermissionSettings: @escaping () -> Void,
          onDirectoryChanged: @escaping (URL) -> Void,
          onShortcutChanged: @escaping (HotKeyShortcut) -> Void,
+         onQuickShortcutChanged: @escaping (HotKeyShortcut) -> Void = { _ in },
          onRecordingChanged: @escaping (Bool) -> Void = { _ in }) {
         self.loginItem = loginItem
         recorder = ShortcutRecordingState(onRecordingChanged: onRecordingChanged)
-        form = SettingsFormState(saveDirectory: saveDirectory, shortcut: shortcut)
+        form = SettingsFormState(saveDirectory: saveDirectory, shortcut: shortcut,
+                                 quickShortcut: quickShortcut, shortcutMessages: shortcutMessages)
         let view = SettingsView(form: form, recorder: recorder, permission: permission, loginItem: loginItem,
                                 onRequestPermission: onRequestPermission,
                                 onOpenPermissionSettings: onOpenPermissionSettings,
-                                onDirectoryChanged: onDirectoryChanged, onShortcutChanged: onShortcutChanged)
+                                onDirectoryChanged: onDirectoryChanged, onShortcutChanged: onShortcutChanged,
+                                onQuickShortcutChanged: onQuickShortcutChanged)
         let hosting = NSHostingController(rootView: view)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 570, height: 720),
                               styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
@@ -50,9 +55,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
-    func update(saveDirectory: URL, shortcut: HotKeyShortcut) {
+    func update(saveDirectory: URL, shortcut: HotKeyShortcut,
+                quickShortcut: HotKeyShortcut? = .defaultQuickShortcut,
+                shortcutMessages: [CaptureShortcutAction: String] = [:]) {
         form.saveDirectory = saveDirectory
         form.shortcut = shortcut
+        form.quickShortcut = quickShortcut
+        form.shortcutMessages = shortcutMessages
     }
 
     override func showWindow(_ sender: Any?) {
@@ -75,6 +84,7 @@ private struct SettingsView: View {
     let onOpenPermissionSettings: () -> Void
     let onDirectoryChanged: (URL) -> Void
     let onShortcutChanged: (HotKeyShortcut) -> Void
+    let onQuickShortcutChanged: (HotKeyShortcut) -> Void
 
     var body: some View {
         VStack(spacing: 0) {
@@ -183,25 +193,11 @@ private struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
             Section("全局快捷键") {
-                LabeledContent("开始 / 完成截图") {
-                    ShortcutRecorderButton(shortcut: form.shortcut, recorder: recorder) { value in
-                        form.shortcut = value
-                        onShortcutChanged(value)
-                    }
-                    .frame(width: 185, height: 28)
-                }
-                HStack {
-                    Text(recorder.message ?? "点击后按下快捷键；至少包含 Control、Option 或 Command。")
-                        .font(.caption)
-                        .foregroundStyle(recorder.message == nil ? Color.secondary : Color.orange)
-                    Spacer()
-                    GlassSettingsButton("恢复默认") {
-                        recorder.cancel()
-                        form.shortcut = .defaultShortcut
-                        onShortcutChanged(form.shortcut)
-                    }
-                    .controlSize(.small)
-                }
+                shortcutRow(.confirmation)
+                shortcutRow(.quick)
+                Text("点击后按下快捷键；至少包含 Control、Option 或 Command。采集中按任一个快捷键完成；有待处理结果时打开该结果。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             Text("手动滚动 · 仅申请屏幕录制权限 · 不自动复制到剪贴板")
                 .font(.caption)
@@ -210,6 +206,48 @@ private struct SettingsView: View {
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
         .background(.clear)
+    }
+
+    private func shortcutRow(_ action: CaptureShortcutAction) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            LabeledContent(action.title) {
+                ShortcutRecorderButton(action: action,
+                    shortcut: action == .confirmation ? form.shortcut : form.quickShortcut,
+                    recorder: recorder) { value in
+                    changeShortcut(value, for: action)
+                }
+                .frame(width: 185, height: 28)
+            }
+            HStack(alignment: .top) {
+                Text(action == .confirmation ? "框选后可移动、调整范围，回车开始。" : "拖动框选，松开鼠标立即开始。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                GlassSettingsButton("恢复默认") {
+                    recorder.cancel()
+                    changeShortcut(action == .confirmation ? .defaultShortcut : .defaultQuickShortcut,
+                                   for: action)
+                }
+                .controlSize(.small)
+                .accessibilityLabel("恢复\(action.title)默认设置")
+            }
+            if let message = recorder.activeAction == action ? recorder.message : form.shortcutMessages[action] {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .textSelection(.enabled)
+            }
+        }
+    }
+
+    private func changeShortcut(_ value: HotKeyShortcut, for action: CaptureShortcutAction) {
+        if action == .confirmation {
+            form.shortcut = value
+            onShortcutChanged(value)
+        } else {
+            form.quickShortcut = value
+            onQuickShortcutChanged(value)
+        }
     }
 
     private var loginItemStatus: String {
@@ -264,16 +302,22 @@ private struct GlassSettingsButton: View {
 private final class SettingsFormState: ObservableObject {
     @Published var saveDirectory: URL
     @Published var shortcut: HotKeyShortcut
+    @Published var quickShortcut: HotKeyShortcut?
+    @Published var shortcutMessages: [CaptureShortcutAction: String]
 
-    init(saveDirectory: URL, shortcut: HotKeyShortcut) {
+    init(saveDirectory: URL, shortcut: HotKeyShortcut, quickShortcut: HotKeyShortcut?,
+         shortcutMessages: [CaptureShortcutAction: String]) {
         self.saveDirectory = saveDirectory
         self.shortcut = shortcut
+        self.quickShortcut = quickShortcut
+        self.shortcutMessages = shortcutMessages
     }
 }
 
 @MainActor
 private final class ShortcutRecordingState: ObservableObject {
     @Published private(set) var recording = false
+    @Published private(set) var activeAction: CaptureShortcutAction?
     @Published private(set) var message: String?
     private let onRecordingChanged: (Bool) -> Void
     private var monitor: Any?
@@ -282,12 +326,15 @@ private final class ShortcutRecordingState: ObservableObject {
 
     init(onRecordingChanged: @escaping (Bool) -> Void) { self.onRecordingChanged = onRecordingChanged }
 
-    func begin(in window: NSWindow, onRecord: @escaping (HotKeyShortcut) -> Void) {
-        cancel()
+    func begin(_ action: CaptureShortcutAction, in window: NSWindow,
+               onRecord: @escaping (HotKeyShortcut) -> Void) {
         self.recordingWindow = window
         self.onRecord = onRecord
-        recording = true
+        activeAction = action
         message = "正在录入；按 Esc 取消。"
+        // Switching rows keeps both global shortcuts suspended without a brief re-registration.
+        guard !recording else { return }
+        recording = true
         onRecordingChanged(true)
         monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self else { return event }
@@ -302,9 +349,11 @@ private final class ShortcutRecordingState: ObservableObject {
         monitor = nil
         onRecord = nil
         recordingWindow = nil
-        if recording { onRecordingChanged(false) }
+        let wasRecording = recording
         recording = false
+        activeAction = nil
         message = nil
+        if wasRecording { onRecordingChanged(false) }
     }
 
     private func handle(_ event: NSEvent) -> NSEvent? {
@@ -322,30 +371,34 @@ private final class ShortcutRecordingState: ObservableObject {
         if flags.contains(.shift) { modifiers |= UInt32(shiftKey) }
         let callback = onRecord
         let value = HotKeyShortcut(keyCode: UInt32(event.keyCode), modifiers: modifiers)
-        cancel()
+        onRecord = nil
         callback?(value)
+        cancel()
         return nil
     }
 }
 
 @MainActor
 private struct ShortcutRecorderButton: NSViewRepresentable {
-    let shortcut: HotKeyShortcut
+    let action: CaptureShortcutAction
+    let shortcut: HotKeyShortcut?
     @ObservedObject var recorder: ShortcutRecordingState
     let onRecord: (HotKeyShortcut) -> Void
 
     func makeNSView(context: Context) -> NSButton {
-        let button = NSButton(title: shortcut.displayName, target: context.coordinator, action: #selector(Coordinator.clicked(_:)))
+        let button = NSButton(title: shortcut?.displayName ?? "未设置", target: context.coordinator,
+                              action: #selector(Coordinator.clicked(_:)))
         NativeUI.styleAction(button)
         button.controlSize = .regular
-        button.setAccessibilityLabel("录入全局快捷键")
+        button.setAccessibilityLabel("录入\(action.title)快捷键")
         return button
     }
 
     func updateNSView(_ button: NSButton, context: Context) {
         context.coordinator.parent = self
-        button.title = recorder.recording ? "请按快捷键…" : shortcut.displayName
-        button.state = recorder.recording ? .on : .off
+        let isRecording = recorder.activeAction == action
+        button.title = isRecording ? "请按快捷键…" : (shortcut?.displayName ?? "未设置")
+        button.state = isRecording ? .on : .off
     }
 
     func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
@@ -357,8 +410,8 @@ private struct ShortcutRecorderButton: NSViewRepresentable {
 
         @objc func clicked(_ sender: NSButton) {
             guard let window = sender.window else { return }
-            if parent.recorder.recording { parent.recorder.cancel() }
-            else { parent.recorder.begin(in: window, onRecord: parent.onRecord) }
+            if parent.recorder.activeAction == parent.action { parent.recorder.cancel() }
+            else { parent.recorder.begin(parent.action, in: window, onRecord: parent.onRecord) }
         }
     }
 }

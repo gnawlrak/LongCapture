@@ -11,6 +11,9 @@ xcrun swiftc -parse-as-library \
   "$ROOT/LongCapture/Source/Capture/ScreenCapturePermission.swift" \
   "$ROOT/LongCapture/Source/Core/Stitching.swift" \
   "$ROOT/LongCapture/Source/Core/CaptureDocument.swift" \
+  "$ROOT/LongCapture/Source/Core/SessionCoordinator.swift" \
+  "$ROOT/LongCapture/Source/Core/StitchingController.swift" \
+  "$ROOT/LongCapture/Source/Capture/ScreenCaptureController.swift" \
   "$ROOT/LongCapture/Source/Core/ResultLifecycle.swift" \
   "$ROOT/scripts/render-ui.swift" -o "$OUTPUT/render-ui"
 "$OUTPUT/render-ui" "$OUTPUT" "$@"

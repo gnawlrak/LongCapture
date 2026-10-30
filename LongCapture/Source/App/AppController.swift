@@ -10,8 +10,7 @@ final class AppController: NSObject {
     private var preview: PreviewWindowController?
     private var settings: SettingsWindowController?
     private var coordinator: SessionCoordinator!
-    private var hotKey: HotKey?
-    private var shortcut: HotKeyShortcut = .defaultShortcut
+    private var shortcuts: CaptureShortcuts!
     private var originalApplication: NSRunningApplication?
     private var activeResult: SessionResult?
     private var saveTask: Task<URL, Error>?
@@ -19,26 +18,25 @@ final class AppController: NSObject {
     private let screenCapturePermission = ScreenCapturePermission()
     private let loginItemSettings = LoginItemSettings()
     private var isPresentingPermissionAlert = false
-    private var isRecordingShortcut = false
     private var observers: [(NotificationCenter, NSObjectProtocol)] = []
     private var saveDirectory = FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first
         ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Desktop", isDirectory: true)
     private let saveDirectoryKey = "LongCapture.saveDirectory"
-    private let shortcutKey = "LongCapture.shortcut"
     private let beginMenuItem = NSMenuItem(title: "开始长截图", action: #selector(beginSelection), keyEquivalent: "")
+    private let quickMenuItem = NSMenuItem(title: "快速长截图（松手开始）", action: #selector(beginQuickSelection), keyEquivalent: "")
 
     override init() {
         super.init()
         if let path = UserDefaults.standard.string(forKey: saveDirectoryKey) {
             saveDirectory = URL(fileURLWithPath: path, isDirectory: true)
         }
-        if let data = UserDefaults.standard.data(forKey: shortcutKey),
-           let stored = try? JSONDecoder().decode(HotKeyShortcut.self, from: data) { shortcut = stored }
+        shortcuts = CaptureShortcuts { [weak self] action in self?.shortcutPressed(action) }
         statusItem.button?.image = NSImage(systemSymbolName: "rectangle.dashed", accessibilityDescription: "长截图")
-        statusItem.button?.toolTip = "长截图 · \(shortcut.displayName)"
         let menu = NSMenu()
         beginMenuItem.target = self
         menu.addItem(beginMenuItem)
+        quickMenuItem.target = self
+        menu.addItem(quickMenuItem)
         let permissionItem = NSMenuItem(title: "屏幕录制权限…", action: #selector(showPermissionSettings), keyEquivalent: "")
         permissionItem.target = self
         menu.addItem(permissionItem)
@@ -54,11 +52,23 @@ final class AppController: NSObject {
             onError: { [weak self] in self?.showCaptureError($0) },
             onUpdate: { [weak self] in self?.captureOverlay?.update($0) },
             onStateChanged: { [weak self] in self?.stateChanged($0) })
-        registerShortcut(reportFailure: true)
+        shortcuts.register()
+        syncShortcutPresentation()
+        let failures = CaptureShortcutAction.allCases.compactMap { action in
+            shortcuts.messages[action].map { "\(action.title)：\($0)" }
+        }
+        if !failures.isEmpty {
+            DispatchQueue.main.async { [weak self] in
+                self?.alert(title: "部分快捷键不可用", message: failures.joined(separator: "\n\n"))
+            }
+        }
         observeInterruptions()
     }
 
-    @objc func beginSelection() {
+    @objc func beginSelection() { shortcutPressed(.confirmation) }
+    @objc private func beginQuickSelection() { shortcutPressed(.quick) }
+
+    private func presentSelection(startMode: SelectionStartMode) {
         if activeResult != nil { openPreview(); return }
         if coordinator.state == .capturing { Task { await coordinator.complete() }; return }
         guard coordinator.state == .idle, !screenCapturePermission.isRequesting, !isPresentingPermissionAlert else { return }
@@ -69,7 +79,8 @@ final class AppController: NSObject {
         guard requestScreenCapturePermission(), coordinator.state == .idle else { return }
         coordinator.prepareForSelection()
         let displayFrame = screen.frame, scale = screen.backingScaleFactor
-        selectionOverlay = SelectionOverlay(displayRect: displayFrame, onBegin: { [weak self] rect in
+        selectionOverlay = SelectionOverlay(displayRect: displayFrame, startMode: startMode, scale: scale,
+            onBegin: { [weak self] rect in
             guard let self else { return }
             self.selectionOverlay = nil
             do {
@@ -102,15 +113,20 @@ final class AppController: NSObject {
         Task { await coordinator.beginCapture(geometry: geometry, axis: .automatic) }
     }
 
-    private func shortcutPressed() {
-        guard !isRecordingShortcut else { return }
-        if activeResult != nil { openPreview() }
-        else if let selectionOverlay { selectionOverlay.begin() }
-        else if coordinator.state == .capturing { Task { await coordinator.complete() } }
-        else if coordinator.state == .idle { beginSelection() }
+    private func shortcutPressed(_ action: CaptureShortcutAction) {
+        guard !shortcuts.isSuspended else { return }
+        switch action.intent(state: coordinator.state, hasResult: activeResult != nil,
+                             selectionMode: selectionOverlay?.startMode) {
+        case .select(let mode): presentSelection(startMode: mode)
+        case .confirm: selectionOverlay?.begin()
+        case .complete: Task { await coordinator.complete() }
+        case .openResult: openPreview()
+        case .ignore: break
+        }
     }
 
     private func stateChanged(_ state: SessionCoordinator.State) {
+        quickMenuItem.isHidden = state != .idle
         switch state {
         case .idle:
             captureOverlay?.close(); captureOverlay = nil
@@ -130,17 +146,19 @@ final class AppController: NSObject {
     @objc func showSettings() {
         screenCapturePermission.refresh()
         if let settings { settings.showWindow(nil); NSApp.activate(ignoringOtherApps: true); return }
-        settings = SettingsWindowController(saveDirectory: saveDirectory, shortcut: shortcut,
+        settings = SettingsWindowController(saveDirectory: saveDirectory,
+            shortcut: shortcuts.shortcut(for: .confirmation) ?? .defaultShortcut,
             permission: screenCapturePermission, loginItem: loginItemSettings,
+            quickShortcut: shortcuts.shortcut(for: .quick), shortcutMessages: shortcuts.messages,
             onRequestPermission: { [weak self] in _ = self?.requestScreenCapturePermission() },
             onOpenPermissionSettings: { [weak self] in self?.openScreenCaptureSettings() },
             onDirectoryChanged: { [weak self] url in self?.setSaveDirectory(url) },
-            onShortcutChanged: { [weak self] value in self?.changeShortcut(value) },
+            onShortcutChanged: { [weak self] value in self?.changeShortcut(value, for: .confirmation) },
+            onQuickShortcutChanged: { [weak self] value in self?.changeShortcut(value, for: .quick) },
             onRecordingChanged: { [weak self] recording in
                 guard let self else { return }
-                self.isRecordingShortcut = recording
-                if recording { self.hotKey?.unregister() }
-                else { self.registerShortcut(reportFailure: true) }
+                self.shortcuts.setSuspended(recording)
+                self.syncShortcutPresentation()
             })
         settings?.showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -178,31 +196,25 @@ final class AppController: NSObject {
         }
     }
 
-    private func changeShortcut(_ value: HotKeyShortcut) {
-        shortcut = value
-        settings?.update(saveDirectory: saveDirectory, shortcut: value)
-        if let data = try? JSONEncoder().encode(value) { UserDefaults.standard.set(data, forKey: shortcutKey) }
-        if !isRecordingShortcut { registerShortcut(reportFailure: true) }
+    private func changeShortcut(_ value: HotKeyShortcut, for action: CaptureShortcutAction) {
+        shortcuts.change(value, for: action)
+        syncShortcutPresentation()
     }
 
-    private func registerShortcut(reportFailure: Bool) {
-        hotKey?.unregister()
-        let key = HotKey(shortcut: shortcut) { [weak self] in
-            Task { @MainActor in self?.shortcutPressed() }
+    private func syncShortcutPresentation() {
+        let confirmation = shortcuts.shortcut(for: .confirmation) ?? .defaultShortcut
+        let quick = shortcuts.shortcut(for: .quick)
+        settings?.update(saveDirectory: saveDirectory, shortcut: confirmation,
+                         quickShortcut: quick, shortcutMessages: shortcuts.messages)
+        statusItem.button?.toolTip = "长截图 · 调整 \(confirmation.displayName) · 快速 \(quick?.displayName ?? "未设置")"
+        for (item, shortcut) in [(beginMenuItem, Optional(confirmation)), (quickMenuItem, quick)] {
+            item.toolTip = shortcut?.displayName ?? "请在设置中配置快捷键；菜单入口仍可使用。"
         }
-        hotKey = key
-        do { try key.register() }
-        catch {
-            if reportFailure {
-                DispatchQueue.main.async { [weak self] in self?.alert(title: "快捷键不可用", message: error.localizedDescription) }
-            }
-        }
-        statusItem.button?.toolTip = "长截图 · \(shortcut.displayName)"
     }
 
     private func setSaveDirectory(_ url: URL) {
         saveDirectory = url
-        settings?.update(saveDirectory: url, shortcut: shortcut)
+        syncShortcutPresentation()
         UserDefaults.standard.set(url.path, forKey: saveDirectoryKey)
     }
 

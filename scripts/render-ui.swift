@@ -53,6 +53,17 @@ struct RenderInterface {
             loginStatus = .notRegistered
             loginItem.setEnabled(true)
             try await render(settings.window!, name: "settings-login-error-\(label)", appearance: appearance, into: output)
+            settings.window!.setContentSize(NSSize(width: 530, height: 620))
+            settings.window!.contentView!.layoutSubtreeIfNeeded()
+            scrollToBottom(settings.window!.contentView!)
+            try await render(settings.window!, name: "settings-shortcuts-\(label)", appearance: appearance, into: output)
+            settings.update(saveDirectory: FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Desktop"),
+                shortcut: .defaultQuickShortcut, quickShortcut: nil,
+                shortcutMessages: [.quick: "快速模式默认组合已用作调整模式，请为快速模式设置不同快捷键。菜单入口仍可使用。"])
+            try await Task.sleep(nanoseconds: 150_000_000)
+            settings.window!.contentView!.layoutSubtreeIfNeeded()
+            scrollToBottom(settings.window!.contentView!)
+            try await render(settings.window!, name: "settings-shortcut-conflict-\(label)", appearance: appearance, into: output)
             settings.close()
 
             let preview = PreviewWindowController(image: image, onSave: { output.appendingPathComponent("unused.png") },
@@ -84,6 +95,19 @@ struct RenderInterface {
             try await render(emptySelection.window!, name: "selection-empty-\(label)", appearance: appearance, into: output)
             emptySelection.close()
 
+            let quick = SelectionOverlay(displayRect: display, startMode: .onRelease, scale: 2,
+                                         onBegin: { _ in }, onCancel: {})
+            let quickView = quick.window!.contentView!
+            for (type, point) in [(NSEvent.EventType.leftMouseDown, CGPoint(x: 180, y: 140)),
+                                  (.leftMouseDragged, CGPoint(x: 1100, y: 620))] {
+                let event = NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: 0,
+                    windowNumber: quick.window!.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+                if type == .leftMouseDown { quickView.mouseDown(with: event) }
+                else { quickView.mouseDragged(with: event) }
+            }
+            try await render(quick.window!, name: "selection-quick-\(label)", appearance: appearance, into: output)
+            quick.close()
+
             let existing = Set(app.windows.map(ObjectIdentifier.init))
             let capture = CaptureOverlay(displayRect: display, region: CGRect(x: 180, y: 140, width: 920, height: 480),
                                          onDone: {}, onCancel: {})
@@ -109,7 +133,23 @@ struct RenderInterface {
             try await render(panel, name: "thumbnail-\(label)", appearance: appearance, into: output)
             thumbnail.finish()
         }
-        print("Rendered 22 \(composited ? "composited" : "offscreen") native interface fixtures into \(output.path)")
+        print("Rendered 28 \(composited ? "composited" : "offscreen") native interface fixtures into \(output.path)")
+    }
+
+    @MainActor
+    private static func allViews(_ view: NSView) -> [NSView] {
+        [view] + view.subviews.flatMap(allViews)
+    }
+
+    @MainActor
+    private static func scrollToBottom(_ view: NSView) {
+        for scroll in allViews(view).compactMap({ $0 as? NSScrollView }) {
+            guard let document = scroll.documentView else { continue }
+            let y = document.isFlipped ? max(document.bounds.minY, document.bounds.maxY - scroll.contentView.bounds.height)
+                : document.bounds.minY
+            scroll.contentView.scroll(to: CGPoint(x: 0, y: y))
+            scroll.reflectScrolledClipView(scroll.contentView)
+        }
     }
 
     private static var composited: Bool { CommandLine.arguments.contains("--composited") }
