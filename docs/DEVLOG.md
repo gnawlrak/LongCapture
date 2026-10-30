@@ -1,5 +1,15 @@
 # Development Log
 
+## 2026-10-30 - Slice 25: prepare v1.1.0-beta.1 pre-release
+
+Contract: publish the accumulated verified changes as an explicitly opt-in pre-release, preserving v1.0.0 and its assets. The tagged source and downloaded ZIP must identify the same 1.1.0/build 2 App. Keep the Apple Silicon-only, Apple Development/non-notarized distribution and manual compatibility gaps visible; no algorithm, permission, installed-app or login-item changes.
+
+- Confirm the public branch is still `59312d46a4c90ad55b3e76927b13f081294c7d7c`, with eleven local feature/fix commits to publish and a clean tree. Preserve the previous release metadata locally. Use direct authenticated GitHub transport for publishing rather than forwarding Git credentials through the configured download proxy; do not edit saved remotes or global settings.
+- Add an ignored metadata preflight first: old version 1.0 fails the required 1.1.0 assertion. Bump both configurations to marketing version 1.1.0/build 2, add the versioned Chinese release notes and update README with separate beta/stable download links. The notes document installation, Gatekeeper, permissions, major features, original-result ownership and unverified real receivers/hardware rather than claiming broad stability.
+- Independently rebuild Release and rerun all optimized hosted tests (168/168) and core Release tests (113/113). Strict signing, original designated requirement, icon, both licenses and changed-content identity regression pass. Verify arm64 only, deployment target 14.0, menu-bar mode and no debug entitlement or private provisioning material. Retain existing Vision diagnostics and optional AppIntents metadata warning; no test fails and no system cache is cleared.
+- Package with system ditto into `LongCapture-1.1.0-beta.1-macOS-arm64.zip`, provide SHA256SUMS.txt, extract and compare every bundled file, verify signature and metadata again. Artifacts, logs and generated/user-page probes remain ignored; a high-confidence credential scan covers outgoing commit trees without logging secret values.
+- Stop decision: commit only version/README/release notes and verification documentation, then push main and a new annotated `v1.1.0-beta.1` tag without force. Upload ZIP/checksum to a draft, retrieve and verify the uploaded bytes before publishing with prerelease=true/latest=false, and verify the public release/tag/branch and unchanged previous stable release. Publication confirmation belongs to the observed GitHub result, not this preparation log.
+
 ## 2026-10-30 - Slice 24: native result drag-out and sharing
 
 Contract: thumbnail/preview drag out an independent original-pixel PNG copy using native copy-only dragging and file promises; preview shares only its loaded page through the system picker. Neither transfer resolves the original result, writes the general clipboard or changes automatic save/discard rules. Active interaction pauses the remaining thumbnail countdown and blocks conflicting actions.
