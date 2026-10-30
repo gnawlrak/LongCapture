@@ -1,5 +1,14 @@
 # Development Log
 
+## 2026-10-30 - Slice 18: continuous-image matching and recovery evidence
+
+Contract: smooth but uniquely structured image content can match, relocate within the confirmed page and resume growth without being mistaken for repeated text. Blank, linear-gradient, periodic, changed and no-overlap inputs must still refuse invented displacement. Preserve all image limits, lifecycle and existing text regressions.
+
+- Added an independent continuous-colour raster fixture and a failing real-Vision horizontal growth/recovery regression first: the original code produced 116 failed assertions. The diagnostic confirmed zero correct-overlap error but `textured == false`: 1/2px edge tests missed the image's larger-scale structure. A first raster-disambiguation-only attempt still failed, rather than being labeled a fix.
+- Added 8/16px curvature to texture/recovery sampling with the existing contrast and support minima. Unlike mere larger-distance colour differences, curvature does not qualify a flat/linear gradient. Added a separate uniform-grid, near-lossless raster evidence path for close aliases; require distributed wins, a strong squared-error ratio and strict noise bounds, not confidence alone. Existing pixel/lane/seam thresholds and exact repeated-alias rejection remain intact.
+- Four new tests cover upright image-like horizontal content in both directions/manual/automatic modes, earlier non-exact recovery positions, resumed growth, complete source-pixel equality, periodic/no-overlap/blank/linear-gradient rejection, a changed body and one-level RGB noise. Optimized core passes 93/93; full hosted XCTest passes 140/140, zero failures. The fixtures are generated colour fields, not the user's original photographs or production-stream gesture acceptance.
+- Logs: `build/picture-recovery-red.log`, `build/picture-recovery-first.log`, `build/picture-diagnostic.log`, `build/picture-recovery-multiscale.log`, `build/picture-recovery-core.log`, `build/picture-recovery-full.log`. No permission, signing, login-item, network or installed-App change in this slice. Deliberate next slice: reproduce and handle verified viewport-fixed table edges, then build/install the combined fixes once.
+
 ## 2026-10-29 - Slice 17: relocalize recovery inside confirmed page content
 
 Contract: after a matching failure, returning to a uniquely identifiable viewport fully inside the current page's confirmed content restores the reliable position, even far from the last successful frame. Relocation must not append/delete pixels, change direction, skip unknown content or relax any matching/seam threshold. Further growth still needs a verified frontier seam.

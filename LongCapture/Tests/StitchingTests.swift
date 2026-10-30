@@ -28,6 +28,91 @@ private final class KnownFramePositionEstimator: OffsetEstimating {
 }
 
 final class StitchingTests: XCTestCase {
+    func testPictureHorizontalMatchingRelocationAndContinuedGrowth() throws {
+        let canvas = PictureTestCanvas()
+        for axis in [CaptureAxis.horizontal, .automatic] {
+            for sign in [1, -1] {
+                let start = sign == 1 ? 500 : 5_000
+                let sut = StitchingController(axis: axis)
+                for offset in stride(from: 0, through: 2_400, by: 200) {
+                    XCTAssertNotEqual(sut.accept(canvas.frame(at: start + sign * offset)).action, .needsRecovery)
+                }
+                XCTAssertEqual(sut.accept(canvas.frame(at: 9_000)).action, .needsRecovery)
+                let recovered = sut.accept(canvas.frame(at: start + sign * 137))
+                XCTAssertEqual(recovered.progress, .recovered)
+                XCTAssertEqual(recovered.height, 3_200)
+                for offset in stride(from: 337, through: 2_737, by: 200) {
+                    XCTAssertNotEqual(sut.accept(canvas.frame(at: start + sign * offset)).action, .needsRecovery)
+                }
+                let result = try sut.finish()
+                XCTAssertFalse(result.incomplete)
+                try assertPixelsEqual(result.image, canvas.frame(at: sign == 1 ? start : start - 2_737, width: 3_537))
+            }
+        }
+    }
+
+    func testPictureMatchingStillRejectsPeriodicAndNoOverlapContent() throws {
+        let estimator = VisionOffsetEstimator()
+        let periodic = PictureTestCanvas(width: 2_400, period: 384)
+        let a = try PixelImage(periodic.frame(at: 0)).transposed()
+        let b = try PixelImage(periodic.frame(at: 100)).transposed()
+        XCTAssertNil(estimator.estimate(previous: a, current: b).shift)
+        let canvas = PictureTestCanvas()
+        let first = try PixelImage(canvas.frame(at: 500)).transposed()
+        let distant = try PixelImage(canvas.frame(at: 9_000)).transposed()
+        XCTAssertNil(estimator.estimate(previous: first, current: distant).shift)
+        let blank = try PixelImage(TestCanvas.blank(width: 800, height: 160)).transposed()
+        XCTAssertNil(estimator.estimate(previous: blank, current: blank).shift)
+    }
+
+    func testPictureRelocationRejectsChangedBodyAndAcceptsOneLevelRasterNoise() throws {
+        let canvas = PictureTestCanvas()
+        let sut = StitchingController(axis: .horizontal)
+        for x in stride(from: 500, through: 2_900, by: 200) { _ = sut.accept(canvas.frame(at: x)) }
+        XCTAssertEqual(sut.accept(canvas.frame(at: 9_000)).action, .needsRecovery)
+        var changed = try PixelImage(canvas.frame(at: 637)).pixels
+        changed.withUnsafeMutableBytes { raw in
+            let bytes = raw.bindMemory(to: UInt8.self)
+            for left in [160, 370, 580] {
+                for y in 20..<140 {
+                    for x in left..<(left + 24) {
+                        let p = (y * 800 + x) * 4
+                        bytes[p] = 240; bytes[p + 1] = 40; bytes[p + 2] = 80
+                    }
+                }
+            }
+        }
+        XCTAssertEqual(sut.accept(TestCanvas.image(width: 800, height: 160, pixels: changed)).action, .needsRecovery)
+        var noisy = try PixelImage(canvas.frame(at: 637)).pixels
+        noisy.withUnsafeMutableBytes { raw in
+            let bytes = raw.bindMemory(to: UInt8.self)
+            for p in stride(from: 0, to: bytes.count, by: 4) {
+                for c in 0..<3 where (p / 4 + c) % 2 == 0 { bytes[p + c] += 1 }
+            }
+        }
+        let recovered = sut.accept(TestCanvas.image(width: 800, height: 160, pixels: noisy))
+        XCTAssertEqual(recovered.progress, .recovered)
+        XCTAssertEqual(recovered.height, 3_200)
+        let result = try sut.finish()
+        XCTAssertFalse(result.incomplete)
+        try assertPixelsEqual(result.image, canvas.frame(at: 500, width: 3_200))
+    }
+
+    func testMultiscaleTextureCannotTurnALinearGradientIntoRegistrationEvidence() throws {
+        var pixels = Data(repeating: 255, count: 800 * 160 * 4)
+        pixels.withUnsafeMutableBytes { raw in
+            let bytes = raw.bindMemory(to: UInt8.self)
+            for y in 0..<160 {
+                for x in 0..<800 {
+                    for c in 0..<3 { bytes[(y * 800 + x) * 4 + c] = UInt8(50 + x / 8 + y / 8) }
+                }
+            }
+        }
+        let frame = try PixelImage(TestCanvas.image(width: 800, height: 160, pixels: pixels)).transposed()
+        XCTAssertFalse(OverlapValidator().score(frame, frame, shift: 0).isReliable)
+        XCTAssertNil(VisionOffsetEstimator().estimate(previous: frame, current: frame).shift)
+    }
+
     func testHorizontalRecoveryCanRelocateWithinEarlierConfirmedContentWithoutExactAnchor() throws {
         let canvas = HorizontalTextTestCanvas(width: 12_000)
         for axis in [CaptureAxis.horizontal, .automatic] {

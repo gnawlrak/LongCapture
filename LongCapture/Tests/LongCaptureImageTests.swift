@@ -161,6 +161,40 @@ struct HorizontalTextTestCanvas {
 
 enum ViewportOverlayEdge { case top, bottom }
 
+/// Continuous, image-like colour fields: unlike glyphs/noise, adjacent offsets remain very similar.
+struct PictureTestCanvas {
+    let image: CGImage
+
+    init(width: Int = 12_000, height: Int = 160, period: Int? = nil) {
+        let cell = 24
+        func colour(_ x: Int, _ y: Int, _ channel: Int) -> Int {
+            let x = period.map { x % ($0 / cell) } ?? x
+            let seed = UInt32(truncatingIfNeeded: x &* 374_761_393 &+ y &* 668_265_263 &+ channel &* 104_729)
+            let hash = (seed ^ (seed >> 13)) &* 1_274_126_177
+            return 20 + Int((hash >> 8) % 216)
+        }
+        var pixels = Data(repeating: 255, count: width * height * 4)
+        pixels.withUnsafeMutableBytes { raw in
+            let bytes = raw.bindMemory(to: UInt8.self)
+            for y in 0..<height {
+                for x in 0..<width {
+                    let gx = x / cell, gy = y / cell, fx = x % cell, fy = y % cell
+                    for c in 0..<3 {
+                        let top = colour(gx, gy, c) * (cell - fx) + colour(gx + 1, gy, c) * fx
+                        let bottom = colour(gx, gy + 1, c) * (cell - fx) + colour(gx + 1, gy + 1, c) * fx
+                        bytes[(y * width + x) * 4 + c] = UInt8((top * (cell - fy) + bottom * fy) / (cell * cell))
+                    }
+                }
+            }
+        }
+        image = TestCanvas.image(width: width, height: height, pixels: pixels)
+    }
+
+    func frame(at x: Int, width: Int = 800) -> CGImage {
+        image.cropping(to: CGRect(x: x, y: 0, width: width, height: image.height))!
+    }
+}
+
 /// A viewport-fixed fade and jump button, not part of the scrolling document.
 func withViewportOverlay(_ image: CGImage, edge: ViewportOverlayEdge) throws -> CGImage {
     let source = try PixelImage(image)

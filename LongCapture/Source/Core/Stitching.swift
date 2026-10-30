@@ -379,6 +379,10 @@ struct RecoveryIndex {
                         edge += abs(Int(bytes[p + c]) - Int(bytes[p + 4 + c]))
                         edge += abs(Int(bytes[p + c]) - Int(bytes[p + frame.bytesPerRow + c]))
                     }
+                    if x + 16 < frame.width, y + 16 < frame.height - margin {
+                        edge = max(edge, ImageTexture.curvature(bytes, at: p, step: 4) +
+                                   ImageTexture.curvature(bytes, at: p, step: frame.bytesPerRow))
+                    }
                     if edge > 48 { points.append(Point(column: index, y: y)) }
                 }
             }
@@ -542,6 +546,10 @@ struct VisionOffsetEstimator: OffsetEstimating {
                         edge += max(abs(Int(bytes[p + c]) - Int(bytes[p + image.bytesPerRow + c])),
                                     abs(Int(bytes[p + c]) - Int(bytes[p + 2 * image.bytesPerRow + c])))
                     }
+                    if x + 16 < image.width, y + 16 < image.height - margin {
+                        edge = max(edge, ImageTexture.curvature(bytes, at: p, step: 4) +
+                                   ImageTexture.curvature(bytes, at: p, step: image.bytesPerRow))
+                    }
                     if edge > 48 { result.append(SamplePoint(x: x, y: y)) }
                 }
             }
@@ -593,9 +601,53 @@ struct VisionOffsetEstimator: OffsetEstimating {
         guard !decisive, canRefine else { return decisive }
         // Confirm sparse glyph evidence with a second, nonduplicating grid phase before declaring ambiguity.
         let extra = textureSamples(in: current, dense: true, alternatePhase: true)
-        guard !extra.isEmpty else { return false }
-        return distinguishes(previous, current, best: best, alternative: alternative,
-                             quantizationLimited: quantizationLimited, points: points + extra, canRefine: false)
+        if !extra.isEmpty,
+           distinguishes(previous, current, best: best, alternative: alternative,
+                         quantizationLimited: quantizationLimited, points: points + extra, canRefine: false) { return true }
+        return quantizationLimited && rasterDistinguishes(previous, current, best: best, alternative: alternative,
+                                                         rows: start..<end)
+    }
+
+    /// Smooth images need distributed low-contrast evidence, not only high-contrast glyph edges.
+    /// This path requires a near-lossless winner across a separate uniform grid, never a short exact patch.
+    private func rasterDistinguishes(_ previous: PixelImage, _ current: PixelImage, best: Int, alternative: Int,
+                                    rows: Range<Int>) -> Bool {
+        let nx = min(128, current.width - 1), ny = min(128, rows.count)
+        guard nx >= 16, ny >= 24 else { return false }
+        return previous.pixels.withUnsafeBytes { leftRaw in
+            current.pixels.withUnsafeBytes { rightRaw in
+                let left = leftRaw.bindMemory(to: UInt8.self), right = rightRaw.bindMemory(to: UInt8.self)
+                var wins = 0, losses = 0, count = 0, nearExact = 0
+                var bestSquared = 0.0, otherSquared = 0.0
+                var rowBands = [Int](repeating: 0, count: 4), columnBands = [Int](repeating: 0, count: 3)
+                for iy in 0..<ny {
+                    let y = rows.lowerBound + iy * rows.count / ny
+                    for ix in 0..<nx {
+                        let x = ix * (current.width - 1) / nx
+                        let q = y * current.bytesPerRow + x * 4
+                        let p = q + best * current.bytesPerRow, a = q + alternative * current.bytesPerRow
+                        var bestError = 0, otherError = 0, worst = 0
+                        for c in 0..<3 {
+                            let value = Int(right[q + c])
+                            let b = abs(Int(left[p + c]) - value), o = abs(Int(left[a + c]) - value)
+                            bestError += b; otherError += o; worst = max(worst, b)
+                            bestSquared += Double(b * b); otherSquared += Double(o * o)
+                        }
+                        count += 1
+                        if worst <= 1 { nearExact += 1 }
+                        if bestError <= 3, otherError >= 12, otherError >= max(1, bestError) * 4 {
+                            wins += 1
+                            rowBands[min(3, iy * 4 / ny)] += 1
+                            columnBands[min(2, ix * 3 / nx)] += 1
+                        } else if otherError <= 3, bestError >= 12 { losses += 1 }
+                    }
+                }
+                return nearExact * 100 >= count * 99 && bestSquared <= Double(count * 3) &&
+                    otherSquared >= max(Double(count * 3 * 9), bestSquared * 16) &&
+                    wins >= max(96, count / 8) && wins >= max(1, losses) * 8 &&
+                    rowBands.filter { $0 >= 16 }.count >= 3 && columnBands.filter { $0 >= 16 }.count >= 2
+            }
+        }
     }
 
     /// Test alternative offsets on ink/edges, not mostly-white document margins.
@@ -705,9 +757,38 @@ struct OverlapValidator {
                 let laneMeans = (0..<3).map { totals[$0] / Double(max(1, counts[$0])) }
                 return Score(mean: mean, badFraction: Double(bad) / Double(max(1, count)),
                              laneMeans: laneMeans,
-                             textured: Double(edges) / Double(max(1, count)) >= 0.012 &&
-                                Double(verticalEdges) / Double(max(1, count)) >= 0.004)
+                             textured: (Double(edges) / Double(max(1, count)) >= 0.012 &&
+                                Double(verticalEdges) / Double(max(1, count)) >= 0.004) ||
+                                ImageTexture.hasMultiscaleSupport(current, rows: rows))
             }
+        }
+    }
+}
+
+/// Coarser curvature detects real image structure without calling a flat/linear gradient textured.
+private enum ImageTexture {
+    static func curvature(_ bytes: UnsafeBufferPointer<UInt8>, at p: Int, step: Int) -> Int {
+        (0..<3).reduce(0) { $0 + abs(Int(bytes[p + $1]) - 2 * Int(bytes[p + 8 * step + $1]) +
+                                    Int(bytes[p + 16 * step + $1])) }
+    }
+
+    static func hasMultiscaleSupport(_ image: PixelImage, rows: Range<Int>) -> Bool {
+        let nx = min(96, image.width - 16), ny = min(96, rows.count - 16)
+        guard nx > 0, ny > 0 else { return false }
+        return image.pixels.withUnsafeBytes { raw in
+            let bytes = raw.bindMemory(to: UInt8.self)
+            var edges = 0, verticalEdges = 0
+            for iy in 0..<ny {
+                let y = rows.lowerBound + iy * (rows.count - 16) / ny
+                for ix in 0..<nx {
+                    let x = ix * (image.width - 16) / nx, p = y * image.bytesPerRow + x * 4
+                    let horizontal = curvature(bytes, at: p, step: 4)
+                    let vertical = curvature(bytes, at: p, step: image.bytesPerRow)
+                    if horizontal + vertical > 48 { edges += 1 }
+                    if vertical > 24 { verticalEdges += 1 }
+                }
+            }
+            return Double(edges) / Double(nx * ny) >= 0.012 && Double(verticalEdges) / Double(nx * ny) >= 0.004
         }
     }
 }
