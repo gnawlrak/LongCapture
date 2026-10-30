@@ -35,6 +35,8 @@
 
 ## Invariants
 
+Gallery boundary evidence supplements (not replaces) the regular texture grid. For viewports without frozen insets, scan cross-axis curvature at 8/16px, retain at most sixteen separated boundary rows and forty-eight points per row, and validate their full 16px extent within both candidates' real interior overlap. A boundary witness requires four matching points in each of at least six of twelve bands, spanning two thirds of the cross axis, within the existing two-level pairwise noise limit. Its offset also needs the independent near-lossless overlap validation. Only an at-least-as-large witness can eliminate a shorter, boundary-less white fragment; periodic supported alternatives remain subject to the normal ambiguity checks. Test likely Vision offsets first to avoid hundreds of expensive uniform-grid checks on empty fragments. Frozen tables keep their prior path. No DOM, scroll events or page-specific coordinates are used by the App; those belong only to the isolated public-page acceptance probe.
+
 1. Positive internal displacement is document-down (document-right after horizontal normalization); first nonzero reliable displacement fixes the growing side and rollover cannot change it.
 2. Reliable viewport position is not output length. Reversals never reduce the captured interval.
 3. No unvalidated displacement may append pixels. Mismatch retains its anchor and marks an unfinished result incomplete.

@@ -217,6 +217,38 @@ struct ParallaxGalleryTestCanvas {
 
 enum ViewportOverlayEdge { case top, bottom }
 
+/// Large white cards with a narrow rigid divider and an independently sliding caption.
+struct SparseGalleryTestCanvas {
+    let height = 240
+    let viewportWidth = 1_240
+    let captionRows = 94..<130
+
+    func frame(at position: Int, width: Int = 1_240, captions: Bool = true) -> CGImage {
+        var pixels = Data(repeating: 255, count: width * height * 4)
+        pixels.withUnsafeMutableBytes { raw in
+            let bytes = raw.bindMemory(to: UInt8.self)
+            for y in 0..<height {
+                for x in 0..<width where (x + position) % 1_280 >= 1_260 {
+                    let p = (y * width + x) * 4
+                    for channel in 0..<3 { bytes[p + channel] = 30 }
+                }
+            }
+            guard captions else { return }
+            for card in 0..<7 {
+                let left = card * 1_280 + 900 - position - (position - card * 1_280) / 8
+                for y in captionRows {
+                    for x in min(width, max(0, left))..<max(0, min(width, left + 270)) {
+                        let p = (y * width + x) * 4
+                        let value: UInt8 = (x - left) % 17 < 8 ? UInt8(80 + card * 9) : 255
+                        for channel in 0..<3 { bytes[p + channel] = value }
+                    }
+                }
+            }
+        }
+        return TestCanvas.image(width: width, height: height, pixels: pixels)
+    }
+}
+
 /// An upright spreadsheet whose frozen leading/trailing bands stay at viewport coordinates.
 struct TableTestCanvas {
     let image: CGImage

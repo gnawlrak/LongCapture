@@ -592,7 +592,9 @@ struct VisionOffsetEstimator: OffsetEstimating {
                 let nominal = Int(candidate.rounded())
                 return (nominal - 2 ... nominal + 2).filter { abs($0) <= maximumShift }
             }).sorted()
-            let texture = textureSamples(in: current)
+            // Frozen table edges retain their existing matching path, not the gallery boundary path.
+            let boundaries = insets.isEmpty ? boundarySamples(in: current) : []
+            let texture = textureSamples(in: current) + boundaries
             guard texture.count >= 24 else { return unreliable() }
             let samples = texture.count <= 512 ? texture :
                 (0..<512).map { texture[$0 * texture.count / 512] }
@@ -614,10 +616,30 @@ struct VisionOffsetEstimator: OffsetEstimating {
             let alternatives = matches.filter { $0.mean <= ambiguityThreshold && $0.badFraction < 0.16 }
             if alternatives.contains(where: { abs($0.shift - best.shift) > 2 }) {
                 // Sparse numbering can disappear from the fast sample. Re-rank aliases on a denser edge grid.
-                let detailSamples = textureSamples(in: current, dense: true)
+                let detailSamples = textureSamples(in: current, dense: true) + boundaries
+                // Check likely offsets first, but authorize them only with rigid pixels and interior overlap.
+                let reference = alternatives.sorted { a, b in
+                    let aProposed = proposed.contains(a.shift), bProposed = proposed.contains(b.shift)
+                    return aProposed != bProposed ? aProposed : abs(a.shift) < abs(b.shift)
+                }.first { match in
+                    guard match.maximumError <= 2,
+                          boundarySupport(previous, current, shift: match.shift, excluded: nil, points: boundaries) else { return false }
+                    let overlap = validator.score(previous, current, shift: match.shift)
+                    return overlap.nearLossless && overlap.isReliable && boundarySupport(previous, current,
+                        shift: match.shift, excluded: overlap.excludedColumns, points: boundaries)
+                }
+                let referenceScore = reference.map { validator.score(previous, current, shift: $0.shift) }
+                let referenceRows = reference.flatMap {
+                    validator.contentRows(height: current.height, shift: $0.shift, insets: insets)
+                }
                 var refined: [Match] = []
                 var exactShift: Int?
                 for match in alternatives {
+                    if let reference, let referenceRows, abs(match.shift - reference.shift) > 2,
+                       let rows = validator.contentRows(height: current.height, shift: match.shift, insets: insets),
+                       rows.count <= referenceRows.count,
+                       !boundarySupport(previous, current, shift: match.shift,
+                                        excluded: referenceScore?.excludedColumns, points: boundaries) { continue }
                     let score = sampledError(previous, current, shift: match.shift, points: detailSamples, cutoff: 0.12)
                     let overlap = validator.score(previous, current, shift: match.shift)
                     guard overlap.isReliable else { continue }
@@ -637,9 +659,17 @@ struct VisionOffsetEstimator: OffsetEstimating {
                 // Independently quantized screen frames can differ by two levels, but RMS must stay within one.
                 let quantizationLimited = best.maximumError <= 2 &&
                     validator.score(previous, current, shift: best.shift).nearLossless
+                let bestRows = validator.contentRows(height: current.height, shift: best.shift, insets: insets)
+                let excluded = validator.score(previous, current, shift: best.shift).excludedColumns
+                let rigidBoundary = quantizationLimited && boundarySupport(previous, current,
+                    shift: best.shift, excluded: excluded, points: boundaries)
                 for match in refined where abs(match.shift - best.shift) > 2 &&
                     match.mean <= 0.020 + best.mean * 2 && match.badFraction < 0.16 {
                     guard validator.score(previous, current, shift: match.shift).isReliable else { continue }
+                    if rigidBoundary, let bestRows,
+                       let otherRows = validator.contentRows(height: current.height, shift: match.shift, insets: insets),
+                       bestRows.count >= otherRows.count,
+                       !boundarySupport(previous, current, shift: match.shift, excluded: excluded, points: boundaries) { continue }
                     if !distinguishes(previous, current, best: best.shift, alternative: match.shift,
                                       quantizationLimited: quantizationLimited, points: detailSamples) {
                         return ambiguous()
@@ -660,7 +690,11 @@ struct VisionOffsetEstimator: OffsetEstimating {
         MoveEstimate(shift: nil, message: "画面有重复图案，无法确认位移；请往回滚动恢复或更换选区。")
     }
 
-    private struct SamplePoint { let x: Int; let y: Int }
+    private struct SamplePoint {
+        let x: Int
+        let y: Int
+        var span = 1
+    }
 
     private func textureSamples(in image: PixelImage, dense: Bool = false, alternatePhase: Bool = false) -> [SamplePoint] {
         let start = max(image.height / 6, image.matchingInsets.leading)
@@ -693,6 +727,73 @@ struct VisionOffsetEstimator: OffsetEstimating {
                 }
             }
             return result
+        }
+    }
+
+    /// A regular grid can miss a narrow card divider entirely. Sample strong cross-axis boundaries explicitly.
+    private func boundarySamples(in image: PixelImage) -> [SamplePoint] {
+        guard image.width >= 192,
+              let rows = validator.contentRows(height: image.height, shift: 0, insets: image.matchingInsets),
+              rows.count > 32 else { return [] }
+        return image.pixels.withUnsafeBytes { raw in
+            let bytes = raw.bindMemory(to: UInt8.self)
+            var candidates: [(row: Int, energy: Int)] = []
+            for y in stride(from: rows.lowerBound, to: rows.upperBound - 16, by: max(1, image.height / 2_048)) {
+                var energy = 0
+                var bands = Set<Int>()
+                for column in 0..<48 {
+                    let x = column * (image.width - 2) / 48, p = y * image.bytesPerRow + x * 4
+                    var edge = 0
+                    for channel in 0..<3 {
+                        edge += abs(Int(bytes[p + channel]) - 2 * Int(bytes[p + 8 * image.bytesPerRow + channel]) +
+                            Int(bytes[p + 16 * image.bytesPerRow + channel]))
+                    }
+                    energy += edge
+                    if edge > 48 { bands.insert(x * 12 / image.width) }
+                }
+                if bands.count >= 6 { candidates.append((y, energy)) }
+            }
+            var selected: [Int] = []
+            for candidate in candidates.sorted(by: { $0.energy > $1.energy }) {
+                if selected.allSatisfy({ abs($0 - candidate.row) > 16 }) { selected.append(candidate.row) }
+                if selected.count == 16 { break }
+            }
+            return selected.flatMap { y in
+                (0..<48).map { SamplePoint(x: $0 * (image.width - 2) / 48, y: y, span: 16) }
+            }
+        }
+    }
+
+    /// Only an already near-lossless, at-least-as-large overlap may rule out a boundary-less white alias.
+    /// Repeated dividers still support multiple offsets and must pass the existing ambiguity checks.
+    private func boundarySupport(_ previous: PixelImage, _ current: PixelImage, shift: Int,
+                                 excluded: Range<Int>?, points: [SamplePoint]) -> Bool {
+        let insets = previous.matchingInsets.merged(with: current.matchingInsets)
+        guard let rows = validator.contentRows(height: current.height, shift: shift, insets: insets) else { return false }
+        return previous.pixels.withUnsafeBytes { leftRaw in
+            current.pixels.withUnsafeBytes { rightRaw in
+                let left = leftRaw.bindMemory(to: UInt8.self), right = rightRaw.bindMemory(to: UInt8.self)
+                var bands = [Int](repeating: 0, count: 12)
+                for point in points where point.y >= rows.lowerBound && point.y + 16 < rows.upperBound &&
+                    excluded?.contains(point.x) != true {
+                    let q = point.y * current.bytesPerRow + point.x * 4, p = q + shift * current.bytesPerRow
+                    var worst = 0, edge = 0
+                    for offset in [0, 1, 2, 8, 16] {
+                        for channel in 0..<3 {
+                            worst = max(worst, abs(Int(left[p + offset * current.bytesPerRow + channel]) -
+                                Int(right[q + offset * current.bytesPerRow + channel])))
+                        }
+                    }
+                    for channel in 0..<3 {
+                        edge += abs(Int(right[q + channel]) - 2 * Int(right[q + 8 * current.bytesPerRow + channel]) +
+                            Int(right[q + 16 * current.bytesPerRow + channel]))
+                    }
+                    if worst <= 2, edge > 48 { bands[min(11, point.x * 12 / current.width)] += 1 }
+                }
+                let supported = bands.indices.filter { bands[$0] >= 4 }
+                guard supported.count >= 6, let first = supported.first, let last = supported.last else { return false }
+                return last - first + 1 >= 8
+            }
         }
     }
 
@@ -823,15 +924,18 @@ struct VisionOffsetEstimator: OffsetEstimating {
         let insets = previous.matchingInsets.merged(with: current.matchingInsets)
         guard let rows = validator.contentRows(height: current.height, shift: shift, insets: insets) else { return (1, 1, 255) }
         // Evidence must be relative to the shared body, not to samples outside this displacement's overlap.
-        let sampleCount = points.reduce(0) { $0 + (rows.contains($1.y) ? 1 : 0) }
+        let sampleCount = points.reduce(0) {
+            $0 + (rows.contains($1.y) && ($1.span == 1 || $1.y + $1.span < rows.upperBound) ? 1 : 0)
+        }
         guard sampleCount >= 24 else { return (1, 1, 255) }
         return previous.pixels.withUnsafeBytes { leftRaw in
             current.pixels.withUnsafeBytes { rightRaw in
                 let left = leftRaw.bindMemory(to: UInt8.self), right = rightRaw.bindMemory(to: UInt8.self)
                 var bands = [RasterEvidence](repeating: RasterEvidence(), count: LocalizedMotion.bandCount)
-                let patchOffsets = [0, 4, current.bytesPerRow]
                 var visited = 0, totalError = 0.0
-                for point in points where rows.contains(point.y) {
+                for point in points where rows.contains(point.y) && (point.span == 1 || point.y + point.span < rows.upperBound) {
+                    let patchOffsets = point.span == 1 ? [0, 4, current.bytesPerRow] :
+                        [0, 4, current.bytesPerRow, 8 * current.bytesPerRow, 16 * current.bytesPerRow]
                     let py = point.y + shift
                     let p = py * previous.bytesPerRow + point.x * 4
                     let q = point.y * current.bytesPerRow + point.x * 4

@@ -28,6 +28,87 @@ private final class KnownFramePositionEstimator: OffsetEstimating {
 }
 
 final class StitchingTests: XCTestCase {
+    func testSparseGalleryBoundarySurvivesSnapSizedMovesWithoutWhiteAliases() throws {
+        let canvas = SparseGalleryTestCanvas()
+        for axis in [CaptureAxis.horizontal, .vertical] {
+            for sign in [1, -1] {
+                let positions = sign == 1 ? [1_793, 2_093] : [2_093, 1_793]
+                let frames = try positions.map { position -> CGImage in
+                    let frame = canvas.frame(at: position)
+                    return axis == .horizontal ? frame : try PixelImage(frame).transposed().cgImage()
+                }
+                let previous = try PixelImage(frames[0]), current = try PixelImage(frames[1])
+                let old = try axis == .horizontal ? previous.transposed() : previous
+                let new = try axis == .horizontal ? current.transposed() : current
+                XCTAssertEqual(VisionOffsetEstimator().estimate(previous: old, current: new).shift, sign * 300)
+                for mode in [axis, .automatic] {
+                    let sut = StitchingController(axis: mode)
+                    _ = sut.accept(frames[0])
+                    let update = sut.accept(frames[1])
+                    XCTAssertEqual(update.action, .grew, update.message ?? "")
+                    let result = try sut.finish()
+                    XCTAssertFalse(result.incomplete)
+                    let output = try axis == .horizontal ? PixelImage(result.image) : PixelImage(result.image).transposed()
+                    let expected = try PixelImage(canvas.frame(at: 1_793, width: 1_540, captions: false))
+                    XCTAssertEqual(output.width, expected.width)
+                    guard output.width == expected.width else { continue }
+                    for row in 0..<canvas.height where !canvas.captionRows.contains(row) {
+                        let range = (row * output.bytesPerRow)..<((row + 1) * output.bytesPerRow)
+                        XCTAssertEqual(output.pixels.subdata(in: range), expected.pixels.subdata(in: range))
+                    }
+                }
+            }
+        }
+    }
+
+    func testSparseBoundaryWitnessStillRejectsPeriodicDividers() throws {
+        func frame(at position: Int) throws -> PixelImage {
+            let width = 240, height = 1_240
+            var pixels = Data(repeating: 255, count: width * height * 4)
+            pixels.withUnsafeMutableBytes { raw in
+                let bytes = raw.bindMemory(to: UInt8.self)
+                for y in 0..<height where (y + position) % 320 >= 300 {
+                    for x in 0..<width {
+                        for channel in 0..<3 { bytes[(y * width + x) * 4 + channel] = 30 }
+                    }
+                }
+            }
+            return try PixelImage(TestCanvas.image(width: width, height: height, pixels: pixels))
+        }
+        for sign in [1, -1] {
+            let previous = try frame(at: 500), current = try frame(at: 500 + sign * 100)
+            XCTAssertNil(VisionOffsetEstimator().estimate(previous: previous, current: current).shift)
+            let sut = StitchingController()
+            _ = sut.accept(try previous.cgImage())
+            XCTAssertEqual(sut.accept(try current.cgImage()).action, .needsRecovery)
+            let result = try sut.finish()
+            XCTAssertTrue(result.incomplete)
+            try assertPixelsEqual(result.image, previous.cgImage())
+        }
+    }
+
+    func testSparseGalleryRetinaOutputKeepsOriginalRigidPixels() throws {
+        let canvas = SparseGalleryTestCanvas()
+        for sign in [1, -1] {
+            let positions = sign == 1 ? [1_793, 2_093] : [2_093, 1_793]
+            let sut = StitchingController(axis: .automatic)
+            for position in positions {
+                XCTAssertEqual(sut.accept(try retinaRaster(canvas.frame(at: position))).action, .grew)
+            }
+            let result = try sut.finish()
+            XCTAssertFalse(result.incomplete)
+            let output = try PixelImage(result.image)
+            let expected = try PixelImage(retinaRaster(canvas.frame(at: 1_793, width: 1_540, captions: false)))
+            XCTAssertEqual(output.width, expected.width)
+            XCTAssertEqual(output.height, expected.height)
+            guard output.width == expected.width, output.height == expected.height else { continue }
+            for row in 0..<output.height where !canvas.captionRows.contains(row / 2) {
+                let range = (row * output.bytesPerRow)..<((row + 1) * output.bytesPerRow)
+                XCTAssertEqual(output.pixels.subdata(in: range), expected.pixels.subdata(in: range))
+            }
+        }
+    }
+
     func testParallaxGalleryKeepsRigidArtAndWholeCaptionsInBothDirectionsAndAxes() throws {
         let canvas = ParallaxGalleryTestCanvas()
         for axis in [CaptureAxis.horizontal, .vertical] {
