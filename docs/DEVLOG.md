@@ -1,5 +1,14 @@
 # Development Log
 
+## 2026-10-30 - Slice 29: correlate historical menu-bar-only CPU reports
+
+Contract: investigate the user's clarified pre-logout ~78% CPU incident using historical evidence, not post-login idle readings. Separate confirmed test-host load from an unobserved production incident and retain uncertainty without speculative product changes.
+
+- Read all six existing system `LongCapture` CPU resource reports. Each has the Debug bundle ID, an exact PID match in a local hosted-test log, and XCTest/LongCaptureTests hot stacks. The latest report is PID 80856 at 17:34:32–17:36:44, 68% average CPU, for the host running tests at 17:34:34–17:36:59. The other five match earlier horizontal/picture/table test runs. All six logs record test completion; none proves the user's instantaneous 78% observation or its exact time.
+- Confirm the hosted-app startup guard creates neither AppController nor a second status item under XCTest, despite retaining the process name LongCapture. A read-only process check finds only production PID 95852 and no remaining test host/xcodebuild/xctest. Do not restart the app, log out, change TCC/login items or run another heavy suite merely to investigate a load report.
+- Preserve the narrower memory evidence: post-restart physical footprint 13.2MB/13.6MB peak and zero reported leaks; an independent injected-frame probe completes 60 finish/60 cancel cycles with source/controller deallocation each time and a post-warmup footprint plateau around 15.45–15.56MB. These checks do not cover the prior process, all reachable retention, real SCStream/Vision/UI or large-image encoding.
+- Six deterministic report/log correlation checks pass; evidence remains ignored in `build/MemorySpikeProbe/historical-cpu-correlation.txt`. An initially overstrict interval check failed because one report samples host startup 0.44s before the first test log line; use overlapping execution intervals plus exact PID/identity/test stacks, not an assumption that every sample follows the first log line. Update performance and acceptance handover only. No source or release changes require another compile/test run; review documentation links, evidence values and whitespace before one local documentation commit. Stop decision: the recorded six events are explained as test load, but do not close the user's unspecified incident without matching time/PID or a new abnormal-state sample. No push or release update.
+
 ## 2026-10-30 - Slice 28: publish v1.1.0-beta.2 pre-release
 
 Contract: publish the authorized dual-shortcut feature and bounded recovery-frame optimization as a new opt-in beta, keeping beta.1 and v1.0.0 assets intact. Tagged source, installed App and downloaded package must identify 1.1.0/build 3; remain Apple Silicon-only, Apple Development signed and non-notarized, without making broad idle-CPU or compatibility claims.
