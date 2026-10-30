@@ -93,6 +93,44 @@ struct TestCanvas {
     }
 }
 
+/// Tiny, separately numbered marks on a mostly uniform canvas, not a dense noise texture.
+struct SparseLandmarkTestCanvas {
+    let width = 512
+    let height = 6_000
+    let pixels: Data
+
+    init(periodic: Bool = false, isolated: Bool = false) {
+        var data = Data(repeating: 255, count: 512 * 6_000 * 4)
+        data.withUnsafeMutableBytes { raw in
+            let bytes = raw.bindMemory(to: UInt8.self)
+            for row in 0..<60 {
+                for column in 0..<3 where !isolated || (row == 8 && column == 1) {
+                    let identity = periodic ? column : row * 3 + column
+                    let x = 37 + column * 183 + (periodic ? 0 : row * 7 % 19)
+                    let y = row * 97 + 17 + (periodic ? 0 : row * 11 % 13)
+                    for dy in 0..<5 {
+                        for dx in 0..<7 {
+                            let seed = UInt32(truncatingIfNeeded: identity &* 374_761_393 &+ (dy * 7 + dx) &* 668_265_263)
+                            let hash = (seed ^ (seed >> 13)) &* 1_274_126_177
+                            guard hash % 3 != 0 else { continue }
+                            let p = ((y + dy) * 512 + x + dx) * 4
+                            bytes[p] = UInt8(20 + hash % 100)
+                            bytes[p + 1] = UInt8(30 + (hash >> 8) % 100)
+                            bytes[p + 2] = UInt8(40 + (hash >> 16) % 100)
+                        }
+                    }
+                }
+            }
+        }
+        pixels = data
+    }
+
+    func frame(at position: Int, length: Int = 600) -> CGImage {
+        TestCanvas.image(width: width, height: length,
+            pixels: pixels.subdata(in: position * width * 4..<(position + length) * width * 4))
+    }
+}
+
 struct TextTestCanvas {
     let image: CGImage
     init(width: Int = 640, height: Int = 1_600, lineText: ((Int) -> String)? = nil) {

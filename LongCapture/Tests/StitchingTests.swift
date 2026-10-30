@@ -28,6 +28,55 @@ private final class KnownFramePositionEstimator: OffsetEstimating {
 }
 
 final class StitchingTests: XCTestCase {
+    func testSparseLandmarksPreservePixelsAndRecoverFromConfirmedHistoryInBothAxes() throws {
+        let canvas = SparseLandmarkTestCanvas()
+        for axis in [CaptureAxis.vertical, .horizontal] {
+            for sign in [1, -1] {
+                let start = sign == 1 ? 500 : 2_000
+                func frame(_ position: Int, length: Int = 600) throws -> CGImage {
+                    let image = canvas.frame(at: position, length: length)
+                    return axis == .horizontal ? try PixelImage(image).transposed().cgImage() : image
+                }
+                let sut = StitchingController(axis: .automatic)
+                for offset in [0, 40, 80, 40, 81, 82, 160, 240, 400, 600, 800, 1_000] {
+                    let update = sut.accept(try frame(start + sign * offset))
+                    XCTAssertNotEqual(update.action, .needsRecovery, "\(axis) \(sign) \(offset): \(update.message ?? "")")
+                }
+                XCTAssertEqual(sut.accept(try frame(4_500)).action, .needsRecovery)
+                let recovered = sut.accept(try frame(start + sign * 137))
+                XCTAssertEqual(recovered.progress, .recovered, "Sparse marks must locate earlier confirmed content")
+                XCTAssertEqual(recovered.height, 1_600)
+                for offset in [300, 500, 700, 900, 1_100] {
+                    XCTAssertNotEqual(sut.accept(try frame(start + sign * offset)).action, .needsRecovery)
+                }
+                let result = try sut.finish()
+                XCTAssertFalse(result.incomplete)
+                XCTAssertEqual(result.document.axis, axis)
+                try assertPixelsEqual(result.image, frame(sign == 1 ? start : start - 1_100, length: 1_700))
+                XCTAssertEqual(sut.retainedPixelBytes, 0)
+            }
+        }
+    }
+
+    func testSparseLandmarksDoNotAuthorizePeriodicIsolatedOrChangedEvidence() throws {
+        for canvas in [SparseLandmarkTestCanvas(periodic: true), SparseLandmarkTestCanvas(isolated: true)] {
+            let first = try PixelImage(canvas.frame(at: 500)), next = try PixelImage(canvas.frame(at: 540))
+            XCTAssertNil(VisionOffsetEstimator().estimate(previous: first, current: next).shift)
+        }
+        let canvas = SparseLandmarkTestCanvas()
+        let first = try PixelImage(canvas.frame(at: 500)), next = try PixelImage(canvas.frame(at: 540))
+        var changed = next.pixels
+        changed.withUnsafeMutableBytes { raw in
+            let bytes = raw.bindMemory(to: UInt8.self)
+            for p in stride(from: 0, to: bytes.count, by: 4) where bytes[p] < 200 {
+                bytes[p] = 200; bytes[p + 1] = 20; bytes[p + 2] = 40
+            }
+        }
+        let dynamic = try PixelImage(TestCanvas.image(width: next.width, height: next.height, pixels: changed))
+        XCTAssertNil(VisionOffsetEstimator().estimate(previous: first, current: dynamic).shift)
+        XCTAssertFalse(OverlapValidator().score(first, dynamic, shift: 40).isReliable)
+    }
+
     func testSparseGalleryBoundarySurvivesSnapSizedMovesWithoutWhiteAliases() throws {
         let canvas = SparseGalleryTestCanvas()
         for axis in [CaptureAxis.horizontal, .vertical] {

@@ -247,7 +247,10 @@ final class StitchingController {
     private func recover(_ message: String, frame: PixelImage? = nil) -> StitchUpdate {
         if let frame, let state, axis != .automatic,
            frame.width == state.width, frame.height == state.frameHeight {
-            if recoveryIndex == nil { recoveryIndex = state.makeRecoveryIndex() }
+            let sparseColumns = SparseLandmarks.recoveryColumns(in: frame)
+            if recoveryIndex == nil || !sparseColumns.allSatisfy({ recoveryIndex?.columns.contains($0) == true }) {
+                recoveryIndex = state.makeRecoveryIndex(additionalColumns: sparseColumns)
+            }
             if let position = recoveryIndex?.locate(frame, viewport: state.recoveryViewport),
                self.state?.relocate(to: position) == true {
                 lastReliable = frame

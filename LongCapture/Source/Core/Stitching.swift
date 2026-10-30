@@ -393,8 +393,10 @@ struct StitchState {
         return PixelImage(width: width, height: frameHeight, pixels: pixels, matchingInsets: matchingInsets)
     }
 
-    func makeRecoveryIndex() -> RecoveryIndex {
-        let columns = (0..<min(32, width - 1)).map { $0 * (width - 1) / min(32, width - 1) }
+    func makeRecoveryIndex(additionalColumns: [Int] = []) -> RecoveryIndex {
+        let regularCount = min(additionalColumns.isEmpty ? 32 : 16, width - 1)
+        let regular = (0..<regularCount).map { $0 * (width - 1) / regularCount }
+        let columns = Array(Set(regular + additionalColumns.prefix(16).filter { $0 >= 0 && $0 < width - 1 })).sorted()
         var pixels = Data(count: columns.count * imageHeight * 4)
         pixels.withUnsafeMutableBytes { destination in
             let output = destination.bindMemory(to: UInt32.self)
@@ -454,7 +456,7 @@ struct RecoveryIndex {
     func locate(_ frame: PixelImage, viewport: (Int) -> PixelImage?) -> Int? {
         guard frame.width == width, frame.height <= height, !columns.isEmpty else { return nil }
         struct Point { let column: Int; let y: Int }
-        let points: [Point] = frame.pixels.withUnsafeBytes { raw in
+        var points: [Point] = frame.pixels.withUnsafeBytes { raw in
             let bytes = raw.bindMemory(to: UInt8.self)
             var points: [Point] = []
             let start = max(frame.height / 6, frame.matchingInsets.leading)
@@ -477,6 +479,11 @@ struct RecoveryIndex {
             }
             return points.count <= 128 ? points : (0..<128).map { points[$0 * points.count / 128] }
         }
+        let sparse = SparseLandmarks.samples(in: frame).compactMap { point -> Point? in
+            guard let column = columns.firstIndex(of: point.x) else { return nil }
+            return Point(column: column, y: point.y)
+        }
+        if sparse.count >= 24 { points = sparse }
         guard points.count >= 24 else { return nil }
         let candidates: [(position: Int, error: Int)] = pixels.withUnsafeBytes { referenceRaw in
             frame.pixels.withUnsafeBytes { currentRaw in
@@ -594,7 +601,9 @@ struct VisionOffsetEstimator: OffsetEstimating {
             }).sorted()
             // Frozen table edges retain their existing matching path, not the gallery boundary path.
             let boundaries = insets.isEmpty ? boundarySamples(in: current) : []
-            let texture = textureSamples(in: current) + boundaries
+            let regularTexture = textureSamples(in: current) + boundaries
+            let sparse = regularTexture.count < 256 && insets.isEmpty ? SparseLandmarks.samples(in: current) : []
+            let texture = regularTexture + sparse.map { SamplePoint(x: $0.x, y: $0.y) }
             guard texture.count >= 24 else { return unreliable() }
             let samples = texture.count <= 512 ? texture :
                 (0..<512).map { texture[$0 * texture.count / 512] }
@@ -616,7 +625,8 @@ struct VisionOffsetEstimator: OffsetEstimating {
             let alternatives = matches.filter { $0.mean <= ambiguityThreshold && $0.badFraction < 0.16 }
             if alternatives.contains(where: { abs($0.shift - best.shift) > 2 }) {
                 // Sparse numbering can disappear from the fast sample. Re-rank aliases on a denser edge grid.
-                let detailSamples = textureSamples(in: current, dense: true) + boundaries
+                let detailSamples = textureSamples(in: current, dense: true) + boundaries +
+                    sparse.map { SamplePoint(x: $0.x, y: $0.y) }
                 // Check likely offsets first, but authorize them only with rigid pixels and interior overlap.
                 let reference = alternatives.sorted { a, b in
                     let aProposed = proposed.contains(a.shift), bProposed = proposed.contains(b.shift)
@@ -1054,12 +1064,18 @@ struct OverlapValidator {
                 }
                 let mean = totals.reduce(0, +) / Double(max(1, count))
                 let laneMeans = (0..<3).map { totals[$0] / Double(max(1, counts[$0])) }
-                let original = Score(mean: mean, badFraction: Double(bad) / Double(max(1, count)),
+                var original = Score(mean: mean, badFraction: Double(bad) / Double(max(1, count)),
                              laneMeans: laneMeans,
                              textured: (Double(edges) / Double(max(1, count)) >= 0.012 &&
                                 Double(verticalEdges) / Double(max(1, count)) >= 0.004) ||
                                 ImageTexture.hasMultiscaleSupport(current, rows: rows),
                              nearLossless: nearExact * 100 >= count * 99 && squared <= Double(count * 3 * patchOffsets.count))
+                if requestedRows == nil, !original.textured, original.nearLossless,
+                   previous.matchingInsets.isEmpty, current.matchingInsets.isEmpty,
+                   SparseLandmarks.matches(previous, current, shift: shift, rows: rows) {
+                    original = Score(mean: mean, badFraction: original.badFraction, laneMeans: laneMeans,
+                                     textured: true, nearLossless: true)
+                }
                 // A seam always checks every pixel band. Only registration can exclude localized motion.
                 guard requestedRows == nil,
                       let excluded = LocalizedMotion.exclusion(bands, width: current.width) else { return original }
@@ -1080,6 +1096,95 @@ struct OverlapValidator {
                              badFraction: Double(kept.reduce(0) { $0 + bands[$1].bad }) / Double(staticCount),
                              laneMeans: staticLaneMeans, textured: true, nearLossless: true, excludedColumns: excluded)
             }
+        }
+    }
+}
+
+/// Sparse marks need several independently matching patches, not a lower global texture threshold.
+enum SparseLandmarks {
+    struct Point { let x: Int; let y: Int }
+
+    static func samples(in image: PixelImage) -> [Point] {
+        guard image.matchingInsets.isEmpty,
+              let rows = OverlapValidator().contentRows(height: image.height, shift: 0),
+              !ImageTexture.hasMultiscaleSupport(image, rows: rows) else { return [] }
+        let anchors = anchors(in: image, rows: rows)
+        guard distributed(anchors, width: image.width, rows: rows) else { return [] }
+        return anchors.flatMap { point in
+            [point, Point(x: point.x + 1, y: point.y), Point(x: point.x, y: point.y + 1),
+             Point(x: point.x + 1, y: point.y + 1)]
+        }
+    }
+
+    static func recoveryColumns(in image: PixelImage) -> [Int] {
+        let columns = Array(Set(samples(in: image).map(\.x))).sorted()
+        return columns.count <= 16 ? columns : (0..<16).map { columns[$0 * columns.count / 16] }
+    }
+
+    static func matches(_ previous: PixelImage, _ current: PixelImage, shift: Int, rows: Range<Int>) -> Bool {
+        let candidates = anchors(in: current, rows: rows)
+        guard distributed(candidates, width: current.width, rows: rows) else { return false }
+        return previous.pixels.withUnsafeBytes { leftRaw in
+            current.pixels.withUnsafeBytes { rightRaw in
+                let left = leftRaw.bindMemory(to: UInt8.self), right = rightRaw.bindMemory(to: UInt8.self)
+                var matched: [Point] = []
+                for point in candidates {
+                    var maximum = 0, squared = 0
+                    for dy in -2...2 {
+                        for dx in -2...2 {
+                            let q = (point.y + dy) * current.bytesPerRow + (point.x + dx) * 4
+                            let p = q + shift * current.bytesPerRow
+                            for channel in 0..<3 {
+                                let difference = abs(Int(left[p + channel]) - Int(right[q + channel]))
+                                maximum = max(maximum, difference); squared += difference * difference
+                            }
+                        }
+                    }
+                    // Every detected patch must agree: a moving label cannot hide in the white average.
+                    guard maximum <= 2, squared <= 75 else { return false }
+                    matched.append(point)
+                }
+                return distributed(matched, width: current.width, rows: rows)
+            }
+        }
+    }
+
+    private static func distributed(_ points: [Point], width: Int, rows: Range<Int>) -> Bool {
+        guard points.count >= 6, rows.count >= 24 else { return false }
+        var rowBands = [Int](repeating: 0, count: 3), columnBands = [Int](repeating: 0, count: 3)
+        for point in points {
+            rowBands[min(2, (point.y - rows.lowerBound) * 3 / rows.count)] += 1
+            columnBands[min(2, point.x * 3 / width)] += 1
+        }
+        guard rowBands.filter({ $0 >= 2 }).count >= 2, columnBands.allSatisfy({ $0 >= 2 }),
+              let firstY = points.map(\.y).min(), let lastY = points.map(\.y).max(),
+              let firstX = points.map(\.x).min(), let lastX = points.map(\.x).max() else { return false }
+        return lastY - firstY >= max(24, rows.count / 3) && lastX - firstX >= width / 2
+    }
+
+    private static func anchors(in image: PixelImage, rows: Range<Int>) -> [Point] {
+        guard image.width >= 64, rows.count >= 24 else { return [] }
+        return image.pixels.withUnsafeBytes { raw in
+            let bytes = raw.bindMemory(to: UInt8.self)
+            var cells: [Int: (point: Point, energy: Int)] = [:]
+            for y in stride(from: rows.lowerBound + 2, to: rows.upperBound - 3, by: max(1, image.height / 768)) {
+                for x in stride(from: 2, to: image.width - 3, by: max(1, image.width / 512)) {
+                    let p = y * image.bytesPerRow + x * 4
+                    var horizontal = 0, vertical = 0
+                    for c in 0..<3 {
+                        horizontal += abs(Int(bytes[p - 8 + c]) - 2 * Int(bytes[p + c]) + Int(bytes[p + 8 + c]))
+                        vertical += abs(Int(bytes[p - 2 * image.bytesPerRow + c]) - 2 * Int(bytes[p + c]) +
+                            Int(bytes[p + 2 * image.bytesPerRow + c]))
+                    }
+                    guard vertical > 48, horizontal + vertical > 96 else { continue }
+                    let cell = (y - rows.lowerBound) * 12 / rows.count * 12 + x * 12 / image.width
+                    let energy = horizontal + vertical
+                    if energy > (cells[cell]?.energy ?? 0) { cells[cell] = (Point(x: x, y: y), energy) }
+                }
+            }
+            // Keep the support evenly distributed rather than taking only the darkest single label.
+            let points = cells.sorted { $0.key < $1.key }.map { $0.value.point }
+            return points.count <= 32 ? points : (0..<32).map { points[$0 * points.count / 32] }
         }
     }
 }

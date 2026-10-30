@@ -1,5 +1,15 @@
 # Development Log
 
+## 2026-10-30 - Slice 23: sparse landmarks and query-informed historical recovery
+
+Contract: sparse but distributed, unique rigid marks can establish displacement and recover inside confirmed history without lowering uniform-overlap/seam/ambiguity gates. Blank, isolated, repeated or changing content cannot authorize guessed growth.
+
+- Add two regressions first: the original generated white canvas has tiny separately identified marks, not a dense noise field. The old implementation fails 86 assertions. Cover both axes/directions in automatic mode, tiny movement/revisits, unknown jumps, non-exact historical recovery, resumed growth and every output pixel; preserve periodic/isolated/changed negatives.
+- Bounded tiled contrast anchors supply supplemental offset proposals. Only a distributed set of near-lossless 5 x 5 patches plus the independent near-lossless uniform overlap can replace the missing density evidence; every detected patch must match. Keep frozen-inset viewports on their existing path. Historical proposals use at most sixteen feature columns within the unchanged 32-column index, and still require complete-viewport registration and uniqueness.
+- Intermediate distribution checks reject two separated feature rows in short real overlap; use two motion bands, three cross bands, six patches and a one-third-overlap span rather than relaxing any existing pixel error. An intermediate expanded index violates three existing retained-memory assertions; replace half the regular columns instead of enlarging the cap. Final optimized core 113/113 and hosted XCTest 160/160 pass. Preserve red/intermediate logs and existing Vision cache diagnostics.
+- Own-window, PID-checked ScreenCaptureKit Retina captures supply eight independent replay cases (axes/directions/manual+auto). Baseline fails all eight with 12–22 false pauses or failed historical recovery; final replay has zero false pauses, rejects unknown content, recovers and finishes, with original pixel order within two display-quantization levels. Independent known source coordinates build the reference, not our estimator or seam. Artifacts remain ignored under `build/SparseLandmarkProbe/`; this is not user-page or physical-gesture acceptance.
+- Update README, architecture and acceptance. Stop decision: commit this bounded algorithm slice locally before implementing result transfer; no push or release. Install the combined verified App only after the separate transfer slice passes.
+
 ## 2026-10-30 - Slice 22: remove manual axis switching from capture entry
 
 Contract: one menu/shortcut entry starts automatic axis detection. Selection has no manual axis switcher, while drag/resize, Return/Escape, recovery, reverse visits and existing matching safety remain intact. Do not change the stitching algorithm or claim uniform content is now matchable.
