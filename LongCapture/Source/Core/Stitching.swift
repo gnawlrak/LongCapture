@@ -73,10 +73,14 @@ struct StitchedCapture {
 }
 
 struct MoveEstimate {
+    enum Failure { case unreliable, ambiguous }
     /// Positive shifts mean the viewport has moved down in document coordinates.
     let shift: Int?
     let message: String?
-    init(shift: Int?, message: String? = nil) { self.shift = shift; self.message = message }
+    let failure: Failure?
+    init(shift: Int?, message: String? = nil, failure: Failure? = nil) {
+        self.shift = shift; self.message = message; self.failure = failure
+    }
 }
 
 protocol OffsetEstimating {
@@ -328,8 +332,8 @@ struct StitchState {
     private func matchingSeam(_ old: Frontier, frame: PixelImage, position: Int) -> Int? {
         let shift = position - old.position
         let validator = OverlapValidator()
-        let overlap = validator.score(old.frame, frame, shift: shift)
-        let localized = overlap.excludedColumns != nil
+        let overlap = validator.edgeAwareScore(old.frame, frame, shift: shift)
+        let localized = overlap.excludedColumns != nil || overlap.excludedRows != nil
         guard overlap.isReliable,
               let rows = validator.contentRows(height: frameHeight, shift: shift,
                   insets: old.frame.matchingInsets.merged(with: frame.matchingInsets), includesEdges: true) else { return nil }
@@ -550,14 +554,100 @@ private struct RasterEvidence {
 private enum LocalizedMotion {
     static let bandCount = 12
 
-    static func exclusion(_ bands: [RasterEvidence], width: Int) -> Range<Int>? {
-        guard width >= 192 else { return nil }
+    static func columns(_ bands: [RasterEvidence], width: Int) -> Range<Int>? {
+        guard width >= 192, let excluded = excludedBands(bands) else { return nil }
+        return (excluded.lowerBound * width / bandCount)..<(excluded.upperBound * width / bandCount)
+    }
+
+    static func rows(_ bands: [RasterEvidence], within range: Range<Int>) -> Range<Int>? {
+        guard range.count >= 192, let excluded = excludedBands(bands),
+              excluded.lowerBound == 0 || excluded.upperBound == bandCount else { return nil }
+        let lower = range.lowerBound + excluded.lowerBound * range.count / bandCount
+        let upper = range.lowerBound + excluded.upperBound * range.count / bandCount
+        return lower..<upper
+    }
+
+    static func maximumRemovable(_ bands: [RasterEvidence]) -> Double {
+        guard bands.count == bandCount else { return 0 }
+        return (0...(bandCount * 2 / 3)).map { start in
+            (start..<(start + bandCount / 3)).reduce(0.0) { $0 + bands[$1].total }
+        }.max() ?? 0
+    }
+
+    private static func excludedBands(_ bands: [RasterEvidence]) -> Range<Int>? {
+        guard bands.count == bandCount else { return nil }
         let changed = bands.indices.filter { bands[$0].count > 0 && !bands[$0].nearLossless }
         guard let first = changed.first, let last = changed.last, last - first + 1 <= bandCount / 3,
               bands.indices.filter({ $0 < first || $0 > last }).reduce(0, { $0 + bands[$1].count }) >= 24 else { return nil }
-        return (first * width / bandCount)..<((last + 1) * width / bandCount)
+        return first..<(last + 1)
     }
 
+}
+
+/// A few animated UI regions may change while the document itself stays put.
+/// Require ordered, textured evidence that never comes from a single static sidebar.
+enum StationaryFrameMatcher {
+    private static let columnCount = 12
+    private static let rowCount = 8
+    private static let sampleColumns = 16
+    private static let sampleRows = 12
+
+    static func matches(_ previous: PixelImage, _ current: PixelImage) -> Bool {
+        guard previous.width == current.width, previous.height == current.height,
+              previous.width >= 192, previous.height >= 192 else { return false }
+        let width = current.width, height = current.height, rowBytes = current.bytesPerRow
+        return previous.pixels.withUnsafeBytes { leftRaw in
+            current.pixels.withUnsafeBytes { rightRaw in
+                let left = leftRaw.bindMemory(to: UInt8.self)
+                let right = rightRaw.bindMemory(to: UInt8.self)
+                var stableRows = [Int](repeating: 0, count: rowCount)
+                var stableColumns = [Int](repeating: 0, count: columnCount)
+                var stableTextured = 0
+
+                for row in 0..<rowCount {
+                    let top = row * height / rowCount
+                    let bottom = (row + 1) * height / rowCount
+                    for column in 0..<columnCount {
+                        let leftX = column * width / columnCount
+                        let rightX = (column + 1) * width / columnCount
+                        var samples = 0, nearExact = 0, edges = 0
+                        for iy in 0..<sampleRows {
+                            let y = top + iy * (bottom - top) / sampleRows
+                            for ix in 0..<sampleColumns {
+                                let x = leftX + ix * (rightX - leftX) / sampleColumns
+                                let p = y * rowBytes + x * 4
+                                var worst = 0
+                                for channel in 0..<3 {
+                                    worst = max(worst, abs(Int(left[p + channel]) - Int(right[p + channel])))
+                                }
+                                if worst <= 2 { nearExact += 1 }
+                                samples += 1
+
+                                let nextX = min(x + 4, width - 1)
+                                let nextY = min(y + 2, height - 1)
+                                let edge = (0..<3).reduce(0) { total, channel in
+                                    total +
+                                        abs(Int(right[p + channel]) - Int(right[y * rowBytes + nextX * 4 + channel])) +
+                                        abs(Int(right[p + channel]) - Int(right[nextY * rowBytes + x * 4 + channel]))
+                                }
+                                if edge > 48 { edges += 1 }
+                            }
+                        }
+                        guard samples > 0, nearExact * 100 >= samples * 99,
+                              edges * 100 >= samples * 3 else { continue }
+                        stableTextured += 1
+                        stableRows[row] += 1
+                        stableColumns[column] += 1
+                    }
+                }
+
+                let rows = stableRows.filter { $0 >= 2 }.count
+                let columns = stableColumns.filter { $0 >= 2 }.count
+                return stableTextured * 2 >= rowCount * columnCount &&
+                    rows >= 4 && columns >= 6
+            }
+        }
+    }
 }
 
 /// Vision proposes a displacement; independent pixels, texture, and alternative offsets must validate it.
@@ -566,6 +656,14 @@ struct VisionOffsetEstimator: OffsetEstimating {
     private let validator = OverlapValidator()
 
     func estimate(previous: PixelImage, current: PixelImage) -> MoveEstimate {
+        let primary = estimatePrimary(previous: previous, current: current)
+        if primary.shift != nil { return primary }
+        if primary.failure == .ambiguous { return primary }
+        let fallback = estimateEdgeLocalized(previous: previous, current: current)
+        return fallback ?? primary
+    }
+
+    private func estimatePrimary(previous: PixelImage, current: PixelImage) -> MoveEstimate {
         // Horizontal normalization swaps the accepted 96 x 64 viewport dimensions.
         guard previous.width == current.width, previous.height == current.height,
               min(previous.width, previous.height) >= 64,
@@ -636,7 +734,8 @@ struct VisionOffsetEstimator: OffsetEstimating {
                           boundarySupport(previous, current, shift: match.shift, excluded: nil, points: boundaries) else { return false }
                     let overlap = validator.score(previous, current, shift: match.shift)
                     return overlap.nearLossless && overlap.isReliable && boundarySupport(previous, current,
-                        shift: match.shift, excluded: overlap.excludedColumns, points: boundaries)
+                        shift: match.shift, excluded: overlap.excludedColumns,
+                        excludedRows: overlap.excludedRows, points: boundaries)
                 }
                 let referenceScore = reference.map { validator.score(previous, current, shift: $0.shift) }
                 let referenceRows = reference.flatMap {
@@ -649,12 +748,13 @@ struct VisionOffsetEstimator: OffsetEstimating {
                        let rows = validator.contentRows(height: current.height, shift: match.shift, insets: insets),
                        rows.count <= referenceRows.count,
                        !boundarySupport(previous, current, shift: match.shift,
-                                        excluded: referenceScore?.excludedColumns, points: boundaries) { continue }
+                                        excluded: referenceScore?.excludedColumns,
+                                        excludedRows: referenceScore?.excludedRows, points: boundaries) { continue }
                     let score = sampledError(previous, current, shift: match.shift, points: detailSamples, cutoff: 0.12)
                     let overlap = validator.score(previous, current, shift: match.shift)
                     guard overlap.isReliable else { continue }
                     let mean = max(score.mean, overlap.mean), bad = max(score.badFraction, overlap.badFraction)
-                    if mean == 0, overlap.excludedColumns == nil {
+                    if mean == 0, overlap.excludedColumns == nil, overlap.excludedRows == nil {
                         if let exactShift, abs(exactShift - match.shift) > 2 { return ambiguous() }
                         exactShift = match.shift
                     }
@@ -663,6 +763,7 @@ struct VisionOffsetEstimator: OffsetEstimating {
                 // A complete near-lossless match outranks one obtained by hiding a differing number/label.
                 let complete = refined.filter { $0.maximumError <= 2 &&
                     validator.score(previous, current, shift: $0.shift).excludedColumns == nil &&
+                    validator.score(previous, current, shift: $0.shift).excludedRows == nil &&
                     validator.score(previous, current, shift: $0.shift).nearLossless }
                 guard let winner = (complete.isEmpty ? refined : complete).min(by: { $0.mean < $1.mean }) else { return unreliable() }
                 best = winner
@@ -670,16 +771,19 @@ struct VisionOffsetEstimator: OffsetEstimating {
                 let quantizationLimited = best.maximumError <= 2 &&
                     validator.score(previous, current, shift: best.shift).nearLossless
                 let bestRows = validator.contentRows(height: current.height, shift: best.shift, insets: insets)
-                let excluded = validator.score(previous, current, shift: best.shift).excludedColumns
+                let bestOverlap = validator.score(previous, current, shift: best.shift)
                 let rigidBoundary = quantizationLimited && boundarySupport(previous, current,
-                    shift: best.shift, excluded: excluded, points: boundaries)
+                    shift: best.shift, excluded: bestOverlap.excludedColumns,
+                    excludedRows: bestOverlap.excludedRows, points: boundaries)
                 for match in refined where abs(match.shift - best.shift) > 2 &&
                     match.mean <= 0.020 + best.mean * 2 && match.badFraction < 0.16 {
                     guard validator.score(previous, current, shift: match.shift).isReliable else { continue }
                     if rigidBoundary, let bestRows,
                        let otherRows = validator.contentRows(height: current.height, shift: match.shift, insets: insets),
                        bestRows.count >= otherRows.count,
-                       !boundarySupport(previous, current, shift: match.shift, excluded: excluded, points: boundaries) { continue }
+                       !boundarySupport(previous, current, shift: match.shift,
+                                        excluded: bestOverlap.excludedColumns,
+                                        excludedRows: bestOverlap.excludedRows, points: boundaries) { continue }
                     if !distinguishes(previous, current, best: best.shift, alternative: match.shift,
                                       quantizationLimited: quantizationLimited, points: detailSamples) {
                         return ambiguous()
@@ -692,12 +796,60 @@ struct VisionOffsetEstimator: OffsetEstimating {
         } catch { return unreliable() }
     }
 
+    private func estimateEdgeLocalized(previous: PixelImage, current: PixelImage) -> MoveEstimate? {
+        guard previous.width == current.width, previous.height == current.height,
+              min(previous.width, previous.height) >= 64,
+              max(previous.width, previous.height) >= 96 else { return nil }
+        do {
+            let old = try previous.cgImage(), new = try current.cgImage()
+            let insets = previous.matchingInsets.merged(with: current.matchingInsets)
+            guard let body = validator.contentRows(height: current.height, shift: 0, insets: insets) else {
+                return nil
+            }
+            let visionRows = body
+            let laneWidth = previous.width / 3
+            var candidates: [Int] = []
+            for lane in 0..<3 {
+                let rect = CGRect(x: lane * laneWidth, y: visionRows.lowerBound,
+                                  width: laneWidth, height: visionRows.count)
+                guard let reference = old.cropping(to: rect), let target = new.cropping(to: rect) else { continue }
+                let request = VNTranslationalImageRegistrationRequest(targetedCGImage: target)
+                do { try VNImageRequestHandler(cgImage: reference, options: [:]).perform([request]) }
+                catch { continue }
+                guard let transform = request.results?.first?.alignmentTransform,
+                      transform.tx.isFinite, transform.ty.isFinite, abs(transform.tx) <= 1.5 else { continue }
+                candidates.append(Int((-transform.ty).rounded()))
+            }
+            let maximumShift = Int(Double(previous.height) * maximumShiftFraction)
+            let shifts = Set(candidates.flatMap { candidate in
+                (candidate - 2...candidate + 2).filter { abs($0) <= maximumShift }
+            })
+            let matches = shifts.compactMap { shift -> (shift: Int, score: OverlapValidator.Score)? in
+                let score = validator.edgeAwareScore(previous, current, shift: shift)
+                guard score.isReliable, score.mean <= 0.012, score.badFraction <= 0.06,
+                      score.excludedRows != nil || score.excludedColumns != nil else { return nil }
+                return (shift, score)
+            }.sorted { $0.score.mean < $1.score.mean }
+            guard let best = matches.first else { return nil }
+            if matches.dropFirst().contains(where: {
+                abs($0.shift - best.shift) > 2 && $0.score.mean <= best.score.mean + 0.012
+            }) { return nil }
+            return MoveEstimate(shift: best.shift)
+        } catch {
+            return nil
+        }
+    }
+
     private func unreliable() -> MoveEstimate {
-        MoveEstimate(shift: nil, message: "匹配不可靠，已暂停拼接。请缓慢往回滚动，回到最后确认的位置。")
+        MoveEstimate(shift: nil,
+                     message: "匹配不可靠，已暂停拼接。请缓慢往回滚动，回到最后确认的位置。",
+                     failure: .unreliable)
     }
 
     private func ambiguous() -> MoveEstimate {
-        MoveEstimate(shift: nil, message: "画面有重复图案，无法确认位移；请往回滚动恢复或更换选区。")
+        MoveEstimate(shift: nil,
+                     message: "画面有重复图案，无法确认位移；请往回滚动恢复或更换选区。",
+                     failure: .ambiguous)
     }
 
     private struct SamplePoint {
@@ -777,7 +929,8 @@ struct VisionOffsetEstimator: OffsetEstimating {
     /// Only an already near-lossless, at-least-as-large overlap may rule out a boundary-less white alias.
     /// Repeated dividers still support multiple offsets and must pass the existing ambiguity checks.
     private func boundarySupport(_ previous: PixelImage, _ current: PixelImage, shift: Int,
-                                 excluded: Range<Int>?, points: [SamplePoint]) -> Bool {
+                                 excluded: Range<Int>?, excludedRows: Range<Int>? = nil,
+                                 points: [SamplePoint]) -> Bool {
         let insets = previous.matchingInsets.merged(with: current.matchingInsets)
         guard let rows = validator.contentRows(height: current.height, shift: shift, insets: insets) else { return false }
         return previous.pixels.withUnsafeBytes { leftRaw in
@@ -785,7 +938,8 @@ struct VisionOffsetEstimator: OffsetEstimating {
                 let left = leftRaw.bindMemory(to: UInt8.self), right = rightRaw.bindMemory(to: UInt8.self)
                 var bands = [Int](repeating: 0, count: 12)
                 for point in points where point.y >= rows.lowerBound && point.y + 16 < rows.upperBound &&
-                    excluded?.contains(point.x) != true {
+                    excluded?.contains(point.x) != true &&
+                    excludedRows?.overlaps(point.y..<(point.y + 16)) != true {
                     let q = point.y * current.bytesPerRow + point.x * 4, p = q + shift * current.bytesPerRow
                     var worst = 0, edge = 0
                     for offset in [0, 1, 2, 8, 16] {
@@ -813,7 +967,8 @@ struct VisionOffsetEstimator: OffsetEstimating {
         let insets = previous.matchingInsets.merged(with: current.matchingInsets)
         guard let bestRows = validator.contentRows(height: current.height, shift: best, insets: insets),
               let otherRows = validator.contentRows(height: current.height, shift: alternative, insets: insets) else { return false }
-        let excluded = validator.score(previous, current, shift: best).excludedColumns
+        let changed = validator.score(previous, current, shift: best)
+        let excluded = changed.excludedColumns, excludedRows = changed.excludedRows
         // A near-lossless match can rule out a shorter, contradictory fragment.
         // A smaller exact fragment cannot claim superiority over a larger, possibly changing body.
         let stableBaseline = quantizationLimited && bestRows.count >= otherRows.count
@@ -829,7 +984,8 @@ struct VisionOffsetEstimator: OffsetEstimating {
                 var crossBands = [Int](repeating: 0, count: 6)
                 var firstWin = end, lastWin = start
                 var firstCross = current.width, lastCross = 0
-                for point in points where point.y >= start && point.y < end && excluded?.contains(point.x) != true {
+                for point in points where point.y >= start && point.y < end &&
+                    excluded?.contains(point.x) != true && excludedRows?.contains(point.y) != true {
                     let q = point.y * current.bytesPerRow + point.x * 4
                     let p = q + best * current.bytesPerRow, a = q + alternative * current.bytesPerRow
                     var bestError = 0, otherError = 0
@@ -877,7 +1033,8 @@ struct VisionOffsetEstimator: OffsetEstimating {
         let insets = previous.matchingInsets.merged(with: current.matchingInsets)
         guard let bestRows = validator.contentRows(height: current.height, shift: best, insets: insets),
               let otherRows = validator.contentRows(height: current.height, shift: alternative, insets: insets) else { return false }
-        let excluded = validator.score(previous, current, shift: best).excludedColumns
+        let changed = validator.score(previous, current, shift: best)
+        let excluded = changed.excludedColumns, excludedRows = changed.excludedRows
         let start = max(rows.lowerBound, bestRows.lowerBound), end = min(rows.upperBound, bestRows.upperBound)
         // Unlike glyph baseline inference, raster comparisons must read real dependable pixels at both offsets.
         guard end - start >= 24 else { return false }
@@ -894,7 +1051,7 @@ struct VisionOffsetEstimator: OffsetEstimating {
                     let y = start + iy * (end - start) / ny
                     for ix in 0..<nx {
                         let x = ix * (current.width - 1) / nx
-                        if excluded?.contains(x) == true { continue }
+                        if excluded?.contains(x) == true || excludedRows?.contains(y) == true { continue }
                         let q = y * current.bytesPerRow + x * 4
                         let p = q + best * current.bytesPerRow, a = q + alternative * current.bytesPerRow
                         var bestError = 0, otherError = 0, worst = 0
@@ -963,14 +1120,12 @@ struct VisionOffsetEstimator: OffsetEstimating {
                     visited += 1; totalError += error
                     if visited % 16 == 0, totalError > cutoff * Double(sampleCount) {
                         // Even removing the worst allowed contiguous caption cannot rescue this offset.
-                        let removable = (0...(LocalizedMotion.bandCount * 2 / 3)).map { start in
-                            (start..<(start + LocalizedMotion.bandCount / 3)).reduce(0.0) { $0 + bands[$1].total }
-                        }.max() ?? 0
+                        let removable = LocalizedMotion.maximumRemovable(bands)
                         if totalError - removable > cutoff * Double(sampleCount) { return (1, 1, 255) }
                     }
                 }
                 // Sparse evidence may propose a localized exclusion; the independent raster grid must prove it.
-                let excluded = LocalizedMotion.exclusion(bands, width: current.width)
+                let excluded = LocalizedMotion.columns(bands, width: current.width)
                 let kept = bands.indices.filter { excluded?.contains($0 * current.width / LocalizedMotion.bandCount) != true }
                 let count = kept.reduce(0) { $0 + bands[$1].count }
                 guard count >= 24 else { return (1, 1, 255) }
@@ -992,6 +1147,7 @@ struct OverlapValidator {
         let textured: Bool
         let nearLossless: Bool
         var excludedColumns: Range<Int>? = nil
+        var excludedRows: Range<Int>? = nil
         var isReliable: Bool {
             textured && mean <= 0.028 && badFraction <= 0.12 && laneMeans.allSatisfy { $0 <= 0.045 }
         }
@@ -1078,7 +1234,7 @@ struct OverlapValidator {
                 }
                 // A seam always checks every pixel band. Only registration can exclude localized motion.
                 guard requestedRows == nil,
-                      let excluded = LocalizedMotion.exclusion(bands, width: current.width) else { return original }
+                      let excluded = LocalizedMotion.columns(bands, width: current.width) else { return original }
                 let kept = bands.indices.filter { !excluded.contains($0 * current.width / LocalizedMotion.bandCount) }
                 let supported = kept.filter { band in
                     ImageTexture.hasMultiscaleSupport(current, rows: rows,
@@ -1095,6 +1251,91 @@ struct OverlapValidator {
                 return Score(mean: kept.reduce(0.0) { $0 + bands[$1].total } / Double(staticCount),
                              badFraction: Double(kept.reduce(0) { $0 + bands[$1].bad }) / Double(staticCount),
                              laneMeans: staticLaneMeans, textured: true, nearLossless: true, excludedColumns: excluded)
+            }
+        }
+    }
+
+    /// A lazy-loaded strip at either end of the motion overlap may change after scrolling starts.
+    /// The unchanged body must still prove one near-lossless displacement across every column lane.
+    func edgeAwareScore(_ previous: PixelImage, _ current: PixelImage, shift: Int) -> Score {
+        let base = score(previous, current, shift: shift)
+        guard !base.isReliable else { return base }
+        let insets = previous.matchingInsets.merged(with: current.matchingInsets)
+        guard previous.width == current.width, previous.height == current.height,
+              let rows = contentRows(height: current.height, shift: shift, insets: insets),
+              rows.count >= 192 else { return base }
+        return previous.pixels.withUnsafeBytes { leftRaw in
+            current.pixels.withUnsafeBytes { rightRaw in
+                let left = leftRaw.bindMemory(to: UInt8.self), right = rightRaw.bindMemory(to: UInt8.self)
+                let rowBytes = current.bytesPerRow
+                let patchOffsets = [0, 4, rowBytes]
+                var rowBands = [RasterEvidence](repeating: RasterEvidence(), count: LocalizedMotion.bandCount)
+                var rowLanes = Array(repeating: Array(repeating: RasterEvidence(),
+                                                      count: 3), count: LocalizedMotion.bandCount)
+                let nx = min(128, current.width - 1), ny = min(96, rows.count)
+                for iy in 0..<ny {
+                    let y = rows.lowerBound + iy * rows.count / ny
+                    for ix in 0..<nx {
+                        let x = ix * (current.width - 1) / nx
+                        let p = (y + shift) * rowBytes + x * 4, q = y * rowBytes + x * 4
+                        var difference = 0, worst = 0, squared = 0.0
+                        for c in 0..<3 {
+                            var channelDifference = 0
+                            for offset in patchOffsets {
+                                let delta = abs(Int(left[p + offset + c]) - Int(right[q + offset + c]))
+                                channelDifference = max(channelDifference, delta)
+                                squared += Double(delta * delta)
+                            }
+                            difference += channelDifference
+                            worst = max(worst, channelDifference)
+                        }
+                        let lane = min(2, x * 3 / current.width)
+                        let band = min(LocalizedMotion.bandCount - 1,
+                                       (y - rows.lowerBound) * LocalizedMotion.bandCount / rows.count)
+                        let mean = Double(difference) / 765
+                        rowBands[band].record(mean: mean, worst: worst, squared: squared)
+                        rowLanes[band][lane].record(mean: mean, worst: worst, squared: squared)
+                    }
+                }
+                guard let excludedRows = LocalizedMotion.rows(rowBands, within: rows) else { return base }
+                let keptRows = rowBands.indices.filter { index in
+                    let lower = rows.lowerBound + index * rows.count / LocalizedMotion.bandCount
+                    let upper = rows.lowerBound + (index + 1) * rows.count / LocalizedMotion.bandCount
+                    return upper <= excludedRows.lowerBound || lower >= excludedRows.upperBound
+                }
+                let ranges = [
+                    rows.lowerBound..<excludedRows.lowerBound,
+                    excludedRows.upperBound..<rows.upperBound
+                ].filter { $0.count >= 24 }
+                let supportedRows = ranges.reduce(0) { $0 + $1.count }
+                let textured = supportedRows * 3 >= rows.count * 2 && ranges.contains {
+                    $0.count >= rows.count / 2 && ImageTexture.hasMultiscaleSupport(current, rows: $0)
+                }
+                var staticCount = 0, staticBad = 0, staticNear = 0, staticSquared = 0.0
+                var laneTotals = [Double](repeating: 0, count: 3)
+                var laneCounts = [Int](repeating: 0, count: 3)
+                for row in keptRows {
+                    for lane in 0..<3 {
+                        let evidence = rowLanes[row][lane]
+                        staticCount += evidence.count
+                        staticBad += evidence.bad
+                        staticNear += evidence.nearExact
+                        staticSquared += evidence.squared
+                        laneTotals[lane] += evidence.total
+                        laneCounts[lane] += evidence.count
+                    }
+                }
+                let minimumLaneCount = max(8, staticCount / 8)
+                guard staticCount >= 24, laneCounts.allSatisfy({ $0 >= minimumLaneCount }) else { return base }
+                let localized = Score(
+                    mean: laneTotals.reduce(0, +) / Double(staticCount),
+                    badFraction: Double(staticBad) / Double(staticCount),
+                    laneMeans: (0..<3).map { laneTotals[$0] / Double(laneCounts[$0]) },
+                    textured: textured,
+                    nearLossless: staticNear * 100 >= staticCount * 99 &&
+                        staticSquared <= Double(staticCount * 3 * patchOffsets.count),
+                    excludedRows: excludedRows)
+                return localized.isReliable && localized.mean < base.mean ? localized : base
             }
         }
     }

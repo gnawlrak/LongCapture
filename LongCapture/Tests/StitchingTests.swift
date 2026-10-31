@@ -1231,6 +1231,86 @@ final class StitchingTests: XCTestCase {
         XCTAssertNil(estimator.estimate(previous: previous, current: dynamic).shift)
     }
 
+    func testLocalizedLazyLoadBandKeepsUniqueScrollShiftAndUsesCurrentPixels() throws {
+        let canvas = TestCanvas(width: 320, height: 2_000)
+        let previous = try PixelImage(canvas.frame(at: 200, height: 800))
+        var currentPixels = try PixelImage(canvas.frame(at: 240, height: 800)).pixels
+        let dynamicStart = 600
+        currentPixels.withUnsafeMutableBytes { raw in
+            let bytes = raw.bindMemory(to: UInt8.self)
+            for y in dynamicStart..<800 {
+                for x in 0..<320 {
+                    let p = (y * 320 + x) * 4
+                    let seed = UInt32(truncatingIfNeeded: (x &* 2_654_435_761) ^ (y &* 2_246_822_519))
+                    bytes[p] = UInt8(truncatingIfNeeded: seed >> 8)
+                    bytes[p + 1] = UInt8(truncatingIfNeeded: seed >> 16)
+                    bytes[p + 2] = UInt8(truncatingIfNeeded: seed >> 24)
+                    bytes[p + 3] = 255
+                }
+            }
+        }
+        let current = try PixelImage(TestCanvas.image(width: 320, height: 800, pixels: currentPixels))
+
+        XCTAssertTrue(OverlapValidator().edgeAwareScore(previous, current, shift: 40).isReliable)
+        XCTAssertEqual(VisionOffsetEstimator().estimate(previous: previous, current: current).shift, 40)
+
+        let sut = StitchingController(axis: .vertical)
+        XCTAssertEqual(sut.accept(try previous.cgImage()).action, .grew)
+        XCTAssertEqual(sut.accept(try current.cgImage()).action, .grew)
+        let result = try sut.finish()
+        XCTAssertFalse(result.incomplete)
+        let output = try PixelImage(result.image)
+        XCTAssertEqual(output.height, 840)
+        guard output.height == 840 else { return }
+        let prefixBytes = 640 * output.bytesPerRow
+        XCTAssertEqual(output.pixels.prefix(prefixBytes),
+                       try PixelImage(canvas.frame(at: 200, height: 640)).pixels)
+        XCTAssertEqual(output.pixels.suffix(dynamicStart * output.bytesPerRow),
+                       currentPixels.suffix(dynamicStart * output.bytesPerRow))
+    }
+
+    func testLocalizedAnimationRebasesReferenceWithoutTreatingSlowScrollAsStationary() throws {
+        let canvas = TestCanvas(width: 320, height: 2_000)
+        let previous = try PixelImage(canvas.frame(at: 200, height: 600))
+
+        func animatedFrame(at position: Int, seed: UInt32) throws -> PixelImage {
+            var pixels = try PixelImage(canvas.frame(at: position, height: 600)).pixels
+            pixels.withUnsafeMutableBytes { raw in
+                let bytes = raw.bindMemory(to: UInt8.self)
+                for y in 80..<520 {
+                    for x in 0..<80 {
+                        let value = (UInt32(x) &* 2_246_822_519) ^ (UInt32(y) &* 3_266_489_917) ^ seed
+                        let p = (y * 320 + x) * 4
+                        bytes[p] = UInt8(truncatingIfNeeded: value)
+                        bytes[p + 1] = UInt8(truncatingIfNeeded: value >> 8)
+                        bytes[p + 2] = UInt8(truncatingIfNeeded: value >> 16)
+                    }
+                }
+            }
+            return try PixelImage(TestCanvas.image(width: 320, height: 600, pixels: pixels))
+        }
+
+        let animated = try animatedFrame(at: 200, seed: 1)
+        XCTAssertTrue(StationaryFrameMatcher.matches(previous, animated))
+        XCTAssertFalse(StationaryFrameMatcher.matches(
+            previous, try PixelImage(canvas.frame(at: 201, height: 600))),
+            "A one-pixel scroll is not a stationary viewport")
+
+        let sut = StitchingController(axis: .automatic)
+        XCTAssertEqual(sut.accept(try previous.cgImage()).action, .grew)
+        XCTAssertEqual(sut.accept(try animated.cgImage()).action, .stayed)
+        let next = try animatedFrame(at: 240, seed: 2)
+        let update = sut.accept(try next.cgImage())
+        XCTAssertEqual(update.action, .grew, update.message ?? "No reason")
+
+        let result = try sut.finish()
+        XCTAssertFalse(result.incomplete)
+        let output = try PixelImage(result.image)
+        XCTAssertEqual(output.height, 640)
+        XCTAssertEqual(output.pixels.suffix(40 * output.bytesPerRow),
+                       next.pixels.suffix(40 * next.bytesPerRow))
+    }
+
     func testRealVisionMatchesTextDocumentsWithWideWhiteMargins() throws {
         let canvas = TextTestCanvas()
         let sut = StitchingController()

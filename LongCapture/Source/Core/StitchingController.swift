@@ -90,20 +90,30 @@ final class StitchingController {
             clearRecovery()
             return update(.stayed, progress: .unchanged)
         }
+        let stableViewport = StationaryFrameMatcher.matches(previous, frame)
         var candidates: [(axis: CaptureAxis, shift: Int)] = []
-        var stationary = false
+        var zeroShift = false
         for direction in [CaptureAxis.vertical, .horizontal] {
             let oldFrame = direction == .horizontal ? try previous.transposed() : previous
             let newFrame = direction == .horizontal ? try frame.transposed() : frame
             let (old, current) = matchingFrames(previous: oldFrame, current: newFrame)
-            guard let shift = estimator.estimate(previous: old, current: current).shift,
+            let estimate = estimator.estimate(previous: old, current: current)
+            guard let shift = estimate.shift,
                   shift > -current.height, shift < current.height,
-                  OverlapValidator().score(old, current, shift: shift).isReliable else { continue }
-            if shift == 0 { stationary = true }
+                  OverlapValidator().edgeAwareScore(old, current, shift: shift).isReliable else { continue }
+            if shift == 0 { zeroShift = true }
             else { candidates.append((direction, shift)) }
         }
         guard candidates.count == 1, let candidate = candidates.first else {
-            if candidates.isEmpty && stationary {
+            if candidates.isEmpty && zeroShift {
+                clearRecovery()
+                return update(.stayed, progress: .unchanged)
+            }
+            if candidates.isEmpty && stableViewport {
+                // Localized animation changed while the viewport stayed put. Follow the
+                // settled pixels so the next real scroll starts from the current screen.
+                lastReliable = frame
+                pendingAxisFrame = nil
                 clearRecovery()
                 return update(.stayed, progress: .unchanged)
             }
@@ -171,7 +181,7 @@ final class StitchingController {
         guard let shift = estimate.shift, shift > -frame.height, shift < frame.height else {
             return recover(estimate.message ?? "重叠或纹理证据不足，请往回滚到参考画面，再减小滚动幅度。", frame: matchingFrame)
         }
-        guard OverlapValidator().score(pair.previous, matchingFrame, shift: shift).isReliable else {
+        guard OverlapValidator().edgeAwareScore(pair.previous, matchingFrame, shift: shift).isReliable else {
             return recover("无法确认正文重叠，请往回滚到参考画面，再减小滚动幅度。", frame: matchingFrame)
         }
         // Retain the integer anchor so subpixel motion can accumulate.

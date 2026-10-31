@@ -1,5 +1,19 @@
 # Development Log
 
+## 2026-10-31 - Slice 31: Bilibili lazy-load and localized-animation matching
+
+Contract: stop the recurring "匹配不可靠" pause on the public Bilibili home feed when a lazy-loaded strip changes after scrolling starts, without accepting repeated patterns, missing overlap, frozen headers or a one-pixel scroll as a stationary viewport. Keep permissions, caps, axes, output pixels and result lifecycle unchanged.
+
+- Reproduced from the public page as fixed source frames in `build/BilibiliProbe/run-20261031-141851`. The true `480 -> 600` CSS-pixel step is a +240 Retina-pixel displacement. Full-viewport Vision reported `-870` in all three lanes because a local lazy-load band dominated registration; the unchanged body reported `+240`.
+- The ordinary overlap score rejected the correct seam at mean `0.04143` / bad fraction `0.07381`. A row-band-aware score that excludes only the changed edge strip (`638..<727`) produced mean `9.32e-06`, zero bad samples and near-lossless evidence, while the competing `-299` candidate remained mean `0.2425` / bad `0.5609`.
+- Split primary estimation from a bounded edge-localized fallback. The fallback runs only after an `unreliable` primary result, never after a duplicate-pattern `ambiguous` result; Vision reads the trustworthy body rather than the full viewport. It still requires texture, all three lane checks, near-lossless pixels, one contiguous removable edge band and a unique shift.
+- Propagated intentional row exclusion through seam, boundary and ambiguity checks. Added a stationary-frame proof for localized animations: at least half of ordered textured cells must be near-lossless, and no directional candidate may pass. A synthetic one-pixel scroll is explicitly rejected as stationary, so slow manual motion cannot be silently skipped.
+- Added two pixel-level regressions. `testLocalizedLazyLoadBandKeepsUniqueScrollShiftAndUsesCurrentPixels` checks the exact new strip rather than only height; `testLocalizedAnimationRebasesReferenceWithoutTreatingSlowScrollAsStationary` checks both animation rebasing and the following 40-pixel growth. Full stitching tests pass **96/96**; SwiftPM passes **119/119**; Xcode passes **194/194**, with the icon check green. Existing Vision `MDB_MAP_FULL` diagnostics remain visible but did not fail assertions.
+- Bilibili fixed-frame replay `0..15` now produces `2240x4760`, zero pauses and `incomplete=false`. A continuous 15 fps ScreenCaptureKit probe against a self-owned WKWebView produced `2240x4360` after 183 frames, with 41 transient recovery statuses that all resumed and a final `incomplete=false`.
+- A page-wide layout reflow can still exceed the safe evidence boundary. In that case the app must pause and preserve an incomplete result rather than silently skip or duplicate content. This slice does not claim arbitrary feed virtualization, advertisements or continuously changing regions are reconstructible.
+- Release build and strict signing pass for `com.gnawlrak.LongCapture`; the changed-content signing regression preserves the certificate-based designated requirement. No app installation, TCC/login-item change, push or Release update was performed.
+- Evidence: `build/bilibili-stitching-tests.log`, `build/bilibili-full-swift-tests.log`, `build/bilibili-xcode-tests.log`, `build/bilibili-release-build.log`, `build/bilibili-signing-regression.log` and ignored `build/BilibiliProbe/live-final-155825/`. Stop decision: make one focused local commit; do not install over the running build without a request.
+
 ## 2026-10-31 - Slice 30: expose matching rejection reasons
 
 Contract: keep the existing recovery title and safety behavior, but show the specific rejection reason in the toolbar instead of discarding `StitchUpdate.message`. Do not relax matching, overlap, texture, ambiguity, seam, direction or output limits.
