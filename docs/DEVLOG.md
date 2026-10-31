@@ -1,5 +1,14 @@
 # Development Log
 
+## 2026-10-31 - Slice 32: publish v1.1.0-beta.3 maintenance release
+
+Contract: publish the verified localized lazy-load and animation matching fix as a new opt-in beta without replacing `v1.1.0-beta.2`, `v1.1.0-beta.1` or `v1.0.0`. The tagged source and downloadable App must identify 1.1.0/build 4, keep the existing permissions and result lifecycle, and preserve the page-wide-reflow safety boundary.
+
+- The prior slice already committed the matcher fix as `000b2ce`; full stitching **96/96**, SwiftPM **119/119** and optimized hosted XCTest **194/194** passed before release preparation. B站 fixed-frame replay and an independent continuous WKWebView/ScreenCaptureKit probe both finished without an incomplete result.
+- Bump both project configurations to build 4, keep marketing version 1.1.0, update README and add `docs/releases/v1.1.0-beta.3.md`. Describe the observed B站 case, the independent pause-reason UI change and the remaining page-wide reflow/virtualization boundary without claiming arbitrary dynamic pages are fixed.
+- Rebuild and verify an independent arm64 Release, then package only `LongCapture.app` as `LongCapture-1.1.0-beta.3-macOS-arm64.zip` with `SHA256SUMS.txt`. The ZIP is 1,695,869 bytes with SHA-256 `962daae964f3778795d7ba4ddba4946ccd9e4bf2e34d8784b2d3931fe910d9e3`; signature, identity, icon, license, version, deploy target and exact extracted-bundle checks pass, with no `__MACOSX` entries.
+- Push main and the annotated tag without force, upload both assets to a draft with prerelease=true/latest=false, download and verify them, then publish and recheck the public tag, branch, asset bytes and unchanged older releases.
+
 ## 2026-10-31 - Slice 31: Bilibili lazy-load and localized-animation matching
 
 Contract: stop the recurring "匹配不可靠" pause on the public Bilibili home feed when a lazy-loaded strip changes after scrolling starts, without accepting repeated patterns, missing overlap, frozen headers or a one-pixel scroll as a stationary viewport. Keep permissions, caps, axes, output pixels and result lifecycle unchanged.
