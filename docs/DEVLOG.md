@@ -1,5 +1,14 @@
 # Development Log
 
+## 2026-10-31 - Slice 30: expose matching rejection reasons
+
+Contract: keep the existing recovery title and safety behavior, but show the specific rejection reason in the toolbar instead of discarding `StitchUpdate.message`. Do not relax matching, overlap, texture, ambiguity, seam, direction or output limits.
+
+- Reproduce the observability gap first: pass a repeated-pattern rejection through the real `CaptureOverlay`; the old toolbar still exposes only the generic pause title and fails the new assertion. The red log is `build/matching-reason-red.log`.
+- Show the already-produced specific message in the recovery detail row. Examples now distinguish duplicate patterns, insufficient texture/overlap, failed seam validation, automatic-axis ambiguity and dimension changes. The main title remains "匹配暂停，请往回滚动恢复"; reference image and extent/failure behavior are unchanged.
+- Focused regression and the complete `GlassInterfaceTests` group pass **29/29**, 0 failures (`build/matching-reason-green.log`, `build/matching-reason-ui-green.log`). An independent Release build succeeds and passes strict deep signature verification; bundle remains `com.gnawlrak.LongCapture`, version 1.1.0/build 3. Staging and identity are recorded in `build/matching-reason-staging-paths.txt`.
+- No matching implementation, threshold, screenshot pixel, permission, installed app or release asset changes. Stop decision: commit this diagnostics-only UI slice locally; do not install over the running app, push, or update the published pre-release before a live recovery message identifies the next actionable matcher defect.
+
 ## 2026-10-30 - Slice 29: correlate historical menu-bar-only CPU reports
 
 Contract: investigate the user's clarified pre-logout ~78% CPU incident using historical evidence, not post-login idle readings. Separate confirmed test-host load from an unobserved production incident and retain uncertainty without speculative product changes.

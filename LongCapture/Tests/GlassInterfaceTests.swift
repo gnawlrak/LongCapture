@@ -737,9 +737,14 @@ final class GlassInterfaceTests: XCTestCase {
         let panel = try XCTUnwrap(NSApp.windows.first { !existing.contains(ObjectIdentifier($0)) && $0 is NSPanel })
         let root = try XCTUnwrap(panel.contentView)
         let image = try XCTUnwrap(sampleImage().cgImage(forProposedRect: nil, context: nil, hints: nil))
-        overlay.update(StitchUpdate(action: .needsRecovery, height: 900, progress: .recovering, referenceImage: image))
+        overlay.update(StitchUpdate(action: .needsRecovery, height: 900,
+                                    message: "画面有重复图案，无法确认位移；请往回滚动恢复或更换选区。",
+                                    progress: .recovering, referenceImage: image))
         root.layoutSubtreeIfNeeded()
         XCTAssertEqual(panel.sharingType, .none)
+        XCTAssertTrue(descendants(in: root).compactMap { $0 as? NSTextField }.contains {
+            $0.stringValue.contains("重复图案")
+        }, "Recovery toolbar must expose the specific matching rejection, not only the generic pause")
         let reference = try XCTUnwrap(descendants(in: root).compactMap { $0 as? NSImageView }.first { $0.image?.size == NSSize(width: image.width, height: image.height) })
         XCTAssertFalse(reference.isHiddenOrHasHiddenAncestor)
         XCTAssertTrue(root.bounds.contains(root.convert(reference.bounds, from: reference)))

@@ -129,7 +129,9 @@ final class CaptureOverlay {
         let extent = "\(update.axis.title)第 \(update.pageCount) 张 · \(update.height) / \(update.maximumHeight) px"
         if update.action == .needsRecovery {
             status.stringValue = "匹配暂停，请往回滚动恢复"
-            detail.stringValue = update.axis == .automatic ? "尚未锁定滚动方向 · 起始画面仍保留" : "\(extent) · 已确认内容仍保留"
+            detail.stringValue = update.message ?? (update.axis == .automatic
+                ? "尚未锁定滚动方向 · 起始画面仍保留"
+                : "\(extent) · 已确认内容仍保留")
             setSymbol("arrow.uturn.backward", color: .systemOrange)
             showReference(update.referenceImage)
         } else {
