@@ -6,6 +6,7 @@
 
 <p align="center">框选，滚动，得到一张长图。</p>
 <p align="center">A native macOS menu bar app for manually scrolling screenshots.</p>
+<p align="center"><strong>简体中文</strong> · <a href="README.en.md">English</a></p>
 
 长截图是用 Swift、AppKit 和 SwiftUI 开发的 macOS 原生长截图工具。常驻菜单栏，框选应用中的正文区域后，由你手动滚动，软件将可靠重叠的内容拼成长图。
 
@@ -36,7 +37,7 @@
 | --- | --- |
 | 运行目标 | macOS 14 或更新版本 |
 | 构建工具 | Xcode 27 或更新版本，macOS 27 SDK |
-| 已验证开发环境 | Apple Silicon、macOS 27.2、Xcode 27.1 |
+| 已验证开发环境 | Apple Silicon、macOS 27.2、Xcode 27.2 |
 | 架构 | 构建脚本默认生成当前机器架构，非 Universal 包 |
 | 签名 | 本地 App 构建流程要求自己的 Apple Development 签名证书 |
 | 分发 | 尚未公证，不含自动更新 |
